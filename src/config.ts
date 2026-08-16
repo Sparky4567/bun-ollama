@@ -138,6 +138,31 @@ export function loadConfig(configOverrides?: Partial<Config>): Config {
 }
 
 /**
+ * Saves or updates configuration in ~/.ollama-lite/config.json
+ */
+export function saveConfig(updates: Partial<Config>): Config {
+  const configPath = getDefaultConfigPath();
+  const configDir = path.dirname(configPath);
+  if (!fs.existsSync(configDir)) {
+    fs.mkdirSync(configDir, { recursive: true });
+  }
+
+  let fileConfig: Partial<Config> = {};
+  if (fs.existsSync(configPath)) {
+    try {
+      const content = fs.readFileSync(configPath, "utf-8");
+      fileConfig = JSON.parse(content);
+    } catch {
+      fileConfig = {};
+    }
+  }
+
+  const merged = { ...fileConfig, ...updates };
+  fs.writeFileSync(configPath, JSON.stringify(merged, null, 2), "utf-8");
+  return loadConfig();
+}
+
+/**
  * Ensures required directories exist on disk.
  */
 export function ensureDirectories(config: Config): void {

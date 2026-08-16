@@ -78,6 +78,19 @@ bun run src/index.ts run llama3.2:1b "Why is the sky blue?"
 
 ## CLI Reference
 
+### Global Flags
+
+| Flag | Description |
+|---|---|
+| `-q`, `--quiet` | Disable info logs (sets log level to `warn`) |
+| `-s`, `--silent` | Disable all logs (sets log level to `none`) |
+| `-d`, `--debug` | Enable verbose debug logging (sets log level to `debug`) |
+| `--log-level <level>` | Set explicit log level (`debug`, `info`, `warn`, `error`, `none`) |
+| `-h`, `--help` | Show CLI help text |
+| `-v`, `--version` | Show CLI version |
+
+### Commands
+
 | Command | Description | Example |
 |---|---|---|
 | `run <model> [prompt]` | Interactive chat or single-shot generation | `bun run src/index.ts run llama3.2:1b` |
@@ -87,8 +100,9 @@ bun run src/index.ts run llama3.2:1b "Why is the sky blue?"
 | `show <model>` | Show model metadata and manifest | `bun run src/index.ts show llama3.2:1b` |
 | `rm <model>` | Remove model and unreferenced blobs | `bun run src/index.ts rm llama3.2:1b` |
 | `stop <model>` | Stop active inference process | `bun run src/index.ts stop llama3.2:1b` |
-| `serve` | Start Ollama Lite HTTP API daemon | `bun run src/index.ts serve` |
+| `serve` | Start Ollama Lite HTTP API daemon | `bun run src/index.ts serve --quiet` |
 | `benchmark <model>` | Run inference benchmark & tok/s metrics | `bun run src/index.ts benchmark llama3.2:1b` |
+| `config [get/set/list]` | View or update persistent configuration | `bun run src/index.ts config set logLevel none` |
 
 ## Model Catalog & Custom Models
 
@@ -134,7 +148,29 @@ Configuration is loaded from `~/.ollama-lite/config.json` with environment varia
 | `llamaServer` | `OLLAMA_LITE_LLAMA_SERVER` | auto-detected | Path to `llama-server` binary |
 | `defaultContext`| `OLLAMA_LITE_CONTEXT` | `2048` | Context window size |
 | `idleTimeout` | `OLLAMA_LITE_IDLE_TIMEOUT` | `300000` (5m) | Idle duration before unloading |
-| `logLevel` | `OLLAMA_LITE_LOG_LEVEL` | `info` | Logging verbosity (`debug`/`info`/`warn`/`error`) |
+| `logLevel` | `OLLAMA_LITE_LOG_LEVEL` | `info` | Logging verbosity (`debug`/`info`/`warn`/`error`/`none`) |
+
+### Managing Logging Verbosity
+
+You can adjust or disable logging through CLI flags, persistent configuration, or environment variables:
+
+- **CLI Flags**: Pass `-q` / `--quiet` (warnings and errors only), `-s` / `--silent` (no output), or `--log-level <level>`:
+  ```bash
+  bun run src/index.ts serve --quiet
+  bun run src/index.ts run llama3.2:1b "Hello" -q
+  bun run src/index.ts serve --silent
+  ```
+
+- **Persistent Configuration**: Save your preferred log level to `~/.ollama-lite/config.json`:
+  ```bash
+  bun run src/index.ts config set logLevel warn
+  bun run src/index.ts config set logLevel none
+  ```
+
+- **Environment Variable**:
+  ```bash
+  export OLLAMA_LITE_LOG_LEVEL=warn   # or 'none'
+  ```
 
 ## Running Tests
 

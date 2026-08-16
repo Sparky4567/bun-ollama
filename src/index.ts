@@ -10,8 +10,10 @@ import {
   cliStop,
   cliServe,
   cliBenchmark,
+  cliConfig,
   printHelp,
 } from "./cli.ts";
+import { type LogLevel } from "./utils/logging.ts";
 
 export * from "./config.ts";
 export * from "./models/registry.ts";
@@ -25,29 +27,114 @@ export * from "./runtime/llama-server.ts";
 export * from "./runtime/process-manager.ts";
 export * from "./api/server.ts";
 export * from "./api/router.ts";
+export * from "./cli.ts";
+
+export interface ParsedCliArgs {
+  command?: string;
+  args: string[];
+  logLevel?: LogLevel;
+  help?: boolean;
+  version?: boolean;
+}
+
+export function parseCliArgs(rawArgs: string[]): ParsedCliArgs {
+  let command: string | undefined;
+  const args: string[] = [];
+  let logLevel: LogLevel | undefined;
+  let help = false;
+  let version = false;
+  let stopFlagParsing = false;
+
+  for (let i = 0; i < rawArgs.length; i++) {
+    const arg = rawArgs[i];
+    if (arg === undefined) continue;
+
+    if (stopFlagParsing) {
+      if (!command) {
+        command = arg.toLowerCase();
+      } else {
+        args.push(arg);
+      }
+      continue;
+    }
+
+    if (arg === "--") {
+      stopFlagParsing = true;
+      continue;
+    }
+
+    if (arg === "-h" || arg === "--help") {
+      help = true;
+    } else if (arg === "-v" || arg === "--version") {
+      version = true;
+    } else if (arg === "-q" || arg === "--quiet") {
+      logLevel = "warn";
+    } else if (arg === "-s" || arg === "--silent") {
+      logLevel = "none";
+    } else if (arg === "-d" || arg === "--debug") {
+      logLevel = "debug";
+    } else if (arg.startsWith("--log-level=")) {
+      logLevel = arg.slice("--log-level=".length).toLowerCase() as LogLevel;
+    } else if (arg === "--log-level") {
+      i++;
+      const nextArg = rawArgs[i];
+      if (nextArg) {
+        logLevel = nextArg.toLowerCase() as LogLevel;
+      }
+    } else if (!command) {
+      command = arg.toLowerCase();
+    } else {
+      args.push(arg);
+    }
+  }
+
+  return {
+    command,
+    args,
+    logLevel,
+    help,
+    version,
+  };
+}
 
 async function main() {
-  const args = process.argv.slice(2);
-  const command = args[0]?.toLowerCase();
-  const config = loadConfig();
+  const rawArgs = process.argv.slice(2);
+  const parsed = parseCliArgs(rawArgs);
 
-  if (!command || command === "help" || command === "--help" || command === "-h") {
+  const validLogLevels: LogLevel[] = ["debug", "info", "warn", "error", "none"];
+  if (parsed.logLevel && !validLogLevels.includes(parsed.logLevel)) {
+    console.error(
+      `Invalid log level: "${parsed.logLevel}". Valid values are: ${validLogLevels.join(", ")}`
+    );
+    process.exit(1);
+  }
+
+  if (
+    !parsed.command ||
+    parsed.command === "help" ||
+    (parsed.help && !parsed.command)
+  ) {
     printHelp();
     return;
   }
 
-  if (command === "version" || command === "--version" || command === "-v") {
+  if (
+    parsed.command === "version" ||
+    (parsed.version && !parsed.command)
+  ) {
     console.log("ollama-lite v0.1.0 (Bun + llama.cpp)");
     return;
   }
 
-  switch (command) {
+  const config = loadConfig(parsed.logLevel ? { logLevel: parsed.logLevel } : undefined);
+
+  switch (parsed.command) {
     case "run":
-      await cliRun(args[1] || "", args.slice(2), config);
+      await cliRun(parsed.args[0] || "", parsed.args.slice(1), config);
       break;
 
     case "pull":
-      await cliPull(args[1] || "", config);
+      await cliPull(parsed.args[0] || "", config);
       break;
 
     case "list":
@@ -60,16 +147,16 @@ async function main() {
       break;
 
     case "show":
-      await cliShow(args[1] || "", config);
+      await cliShow(parsed.args[0] || "", config);
       break;
 
     case "rm":
     case "delete":
-      await cliRm(args[1] || "", config);
+      await cliRm(parsed.args[0] || "", config);
       break;
 
     case "stop":
-      await cliStop(args[1] || "", config);
+      await cliStop(parsed.args[0] || "", config);
       break;
 
     case "serve":
@@ -77,11 +164,15 @@ async function main() {
       break;
 
     case "benchmark":
-      await cliBenchmark(args[1] || "", config);
+      await cliBenchmark(parsed.args[0] || "", config);
+      break;
+
+    case "config":
+      await cliConfig(parsed.args, config);
       break;
 
     default:
-      console.error(`Unknown command: "${command}"\n`);
+      console.error(`Unknown command: "${parsed.command}"\n`);
       printHelp();
       process.exit(1);
   }

@@ -1,11 +1,11 @@
 import readline from "node:readline";
 import fs from "node:fs";
-import { type Config, loadConfig, ensureDirectories } from "./config.ts";
+import { type Config, loadConfig, saveConfig, ensureDirectories } from "./config.ts";
 import { listManifests, getManifest, deleteModel } from "./models/storage.ts";
 import { downloadModel, type DownloadProgress } from "./models/downloader.ts";
 import { ProcessManager } from "./runtime/process-manager.ts";
 import { startServer } from "./api/server.ts";
-import { logger } from "./utils/logging.ts";
+import { type LogLevel, logger } from "./utils/logging.ts";
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -564,6 +564,76 @@ export async function cliBenchmark(modelName: string, config: Config): Promise<v
 }
 
 /**
+ * CLI Config Command
+ */
+export async function cliConfig(args: string[], config: Config): Promise<void> {
+  const sub = args[0]?.toLowerCase();
+  if (!sub || sub === "list" || sub === "ls" || sub === "show") {
+    console.log("Current configuration (~/.ollama-lite/config.json / defaults):");
+    console.log(`  host:                ${config.host}`);
+    console.log(`  port:                ${config.port}`);
+    console.log(`  logLevel:            ${config.logLevel}`);
+    console.log(`  modelsDir:           ${config.modelsDir}`);
+    console.log(`  runtimeDir:          ${config.runtimeDir}`);
+    console.log(`  defaultContext:      ${config.defaultContext}`);
+    console.log(`  defaultQuantization: ${config.defaultQuantization}`);
+    console.log(`  idleTimeout:         ${config.idleTimeout}ms`);
+    console.log(`  llamaServer:         ${config.llamaServer}`);
+    return;
+  }
+
+  if (sub === "get") {
+    const key = args[1];
+    if (!key) {
+      console.error("Usage: ollama-lite config get <key>");
+      process.exit(1);
+    }
+    const normalizedKey = key === "log-level" ? "logLevel" : key;
+    if (normalizedKey in config) {
+      console.log((config as any)[normalizedKey]);
+    } else {
+      console.error(`Unknown config key: "${key}"`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === "set") {
+    const key = args[1];
+    let value: any = args[2];
+    if (!key || value === undefined) {
+      console.error("Usage: ollama-lite config set <key> <value>");
+      console.error("Example: ollama-lite config set logLevel warn");
+      console.error("Example: ollama-lite config set logLevel none");
+      process.exit(1);
+    }
+
+    const normalizedKey = key === "log-level" ? "logLevel" : key;
+    if (normalizedKey === "logLevel") {
+      const validLevels: LogLevel[] = ["debug", "info", "warn", "error", "none"];
+      if (!validLevels.includes(value as LogLevel)) {
+        console.error(`Invalid log level: "${value}". Valid values are: ${validLevels.join(", ")}`);
+        process.exit(1);
+      }
+    } else if (normalizedKey === "port" || normalizedKey === "defaultContext" || normalizedKey === "idleTimeout") {
+      const num = parseInt(value, 10);
+      if (isNaN(num)) {
+        console.error(`Invalid number for ${key}: "${value}"`);
+        process.exit(1);
+      }
+      value = num;
+    }
+
+    saveConfig({ [normalizedKey]: value });
+    console.log(`Updated config: ${normalizedKey} = ${value}`);
+    return;
+  }
+
+  console.error(`Unknown config command: "${sub}". Use "list", "get", or "set".`);
+  process.exit(1);
+}
+
+/**
  * Prints help text
  */
 export function printHelp(): void {
@@ -571,7 +641,15 @@ export function printHelp(): void {
 Ollama Lite - Lightweight Bun.js & llama.cpp Local LLM Manager
 
 Usage:
-  ollama-lite <command> [arguments]
+  ollama-lite [flags] <command> [arguments]
+
+Flags:
+  -q, --quiet             Disable info logs (sets log level to 'warn')
+  -s, --silent            Disable all logs (sets log level to 'none')
+  -d, --debug             Enable verbose debug logs (sets log level to 'debug')
+      --log-level <level> Set log level explicitly ('debug'|'info'|'warn'|'error'|'none')
+  -h, --help              Show this help message
+  -v, --version           Show Ollama Lite version
 
 Commands:
   run <model> [prompt]    Run a model (starts interactive chat if prompt is omitted)
@@ -583,14 +661,16 @@ Commands:
   stop <model>            Stop an active inference server
   serve                   Start the HTTP API daemon (default port: 11434)
   benchmark <model>       Run inference benchmark passes and compute tok/s metrics
+  config [get|set|list]   View or update persistent configuration (e.g. config set logLevel none)
   help                    Show this help message
   version                 Show Ollama Lite version
 
 Examples:
   ollama-lite run llama3.2:1b
-  ollama-lite run llama3.2:1b "Explain quantum computing in one sentence"
-  ollama-lite pull qwen2.5:0.5b
-  ollama-lite benchmark llama3.2:1b
-  ollama-lite serve
+  ollama-lite run llama3.2:1b "Explain quantum computing in one sentence" --quiet
+  ollama-lite pull qwen2.5:0.5b --silent
+  ollama-lite serve --quiet
+  ollama-lite serve --log-level none
+  ollama-lite config set logLevel warn
 `);
 }
