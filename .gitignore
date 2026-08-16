@@ -1,0 +1,37 @@
+# dependencies (bun install)
+node_modules/
+
+# output & builds
+out/
+dist/
+*.tgz
+
+# model blobs & local downloads
+models/blobs/
+*.part
+*.gguf
+runtime/
+
+# logs
+logs/
+*.log
+
+# code coverage
+coverage/
+*.lcov
+
+# dotenv environment variable files
+.env
+.env.*
+!.env.example
+
+# caches
+.eslintcache
+.cache/
+*.tsbuildinfo
+
+# IDEs & OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

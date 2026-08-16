@@ -1,0 +1,24 @@
+{
+  "name": "bun-ollama",
+  "version": "0.1.0",
+  "description": "Lightweight local LLM manager written in TypeScript on the Bun runtime with llama.cpp backend",
+  "main": "src/index.ts",
+  "module": "src/index.ts",
+  "type": "module",
+  "bin": {
+    "ollama-lite": "./bin/ollama-lite"
+  },
+  "scripts": {
+    "ollama-lite": "bun run src/index.ts",
+    "start": "bun run src/index.ts",
+    "serve": "bun run src/index.ts serve",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
