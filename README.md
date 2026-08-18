@@ -158,6 +158,214 @@ bun run src/index.ts run bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M
 - `POST /v1/chat/completions` - Chat completions (SSE streaming & JSON)
 - `POST /v1/completions` - Text completions
 
+## Python API Examples
+
+Ensure the Ollama Lite daemon is running (`bun run src/index.ts serve` or `ollama-lite serve`) on `http://localhost:11434`.
+
+### 1. Chat Completions (`POST /api/chat`)
+
+#### Streaming (NDJSON)
+Streams real-time token chunks as newline-delimited JSON objects.
+
+```python
+import json
+import requests
+
+url = "http://localhost:11434/api/chat"
+payload = {
+    "model": "llama3.2:1b",
+    "messages": [
+        {"role": "system", "content": "You are a concise assistant."},
+        {"role": "user", "content": "Write a short poem about coding."}
+    ],
+    "stream": True,
+}
+
+response = requests.post(url, json=payload, stream=True)
+
+for line in response.iter_lines():
+    if line:
+        chunk = json.loads(line.decode("utf-8"))
+        delta = chunk.get("message", {}).get("content", "")
+        print(delta, end="", flush=True)
+print()
+```
+
+#### Non-Streaming
+Waits for full generation and returns the complete assistant message.
+
+```python
+import requests
+
+url = "http://localhost:11434/api/chat"
+payload = {
+    "model": "llama3.2:1b",
+    "messages": [
+        {"role": "user", "content": "Explain quantum computing in one sentence."}
+    ],
+    "stream": False,
+}
+
+response = requests.post(url, json=payload)
+data = response.json()
+
+print(data["message"]["content"])
+```
+
+---
+
+### 2. Text Generation (`POST /api/generate`)
+
+#### Streaming (NDJSON)
+Streams raw completion tokens incrementally as they are generated.
+
+```python
+import json
+import requests
+
+url = "http://localhost:11434/api/generate"
+payload = {
+    "model": "llama3.2:1b",
+    "prompt": "List 3 advantages of using TypeScript:",
+    "stream": True,
+}
+
+response = requests.post(url, json=payload, stream=True)
+
+for line in response.iter_lines():
+    if line:
+        chunk = json.loads(line.decode("utf-8"))
+        token = chunk.get("response", "")
+        print(token, end="", flush=True)
+print()
+```
+
+#### Non-Streaming
+Returns the entire completed text response in a single JSON payload.
+
+```python
+import requests
+
+url = "http://localhost:11434/api/generate"
+payload = {
+    "model": "llama3.2:1b",
+    "prompt": "What is the capital of France?",
+    "stream": False,
+}
+
+response = requests.post(url, json=payload)
+data = response.json()
+
+print(data["response"])
+```
+
+---
+
+### 3. Model Management (`GET /api/tags` & `GET /api/ps`)
+
+Inspect installed models and active inference processes:
+
+```python
+import requests
+
+# List installed models
+tags_res = requests.get("http://localhost:11434/api/tags").json()
+print("Installed models:", [m["name"] for m in tags_res.get("models", [])])
+
+# List active / running model processes
+ps_res = requests.get("http://localhost:11434/api/ps").json()
+print("Running models:", [m["name"] for m in ps_res.get("models", [])])
+```
+
+---
+
+### 4. Zero-Dependency Python Example (`urllib.request`)
+
+Interact with Ollama Lite endpoints using only Python's standard library (no `pip` dependencies required):
+
+```python
+import json
+import urllib.request
+
+req = urllib.request.Request(
+    "http://localhost:11434/api/chat",
+    data=json.dumps({
+        "model": "llama3.2:1b",
+        "messages": [{"role": "user", "content": "Hello!"}],
+        "stream": True,
+    }).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+)
+
+with urllib.request.urlopen(req) as resp:
+    for line in resp:
+        if line.strip():
+            chunk = json.loads(line.decode("utf-8"))
+            print(chunk.get("message", {}).get("content", ""), end="", flush=True)
+print()
+```
+
+---
+
+### 5. SDK Compatibility (`ollama` & `openai` packages)
+
+Ollama Lite endpoints are fully drop-in compatible with official client SDKs:
+
+<details>
+<summary><b>Using the official <code>ollama</code> Python package</b></summary>
+
+```python
+import ollama
+
+# Streaming
+stream = ollama.chat(
+    model="llama3.2:1b",
+    messages=[{"role": "user", "content": "Hello!"}],
+    stream=True,
+)
+for chunk in stream:
+    print(chunk["message"]["content"], end="", flush=True)
+print()
+
+# Non-streaming
+res = ollama.chat(
+    model="llama3.2:1b",
+    messages=[{"role": "user", "content": "Hello!"}],
+    stream=False,
+)
+print(res["message"]["content"])
+```
+</details>
+
+<details>
+<summary><b>Using the official <code>openai</code> Python SDK</b></summary>
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+
+# Streaming (SSE)
+stream = client.chat.completions.create(
+    model="llama3.2:1b",
+    messages=[{"role": "user", "content": "Hello!"}],
+    stream=True,
+)
+for chunk in stream:
+    delta = chunk.choices[0].delta.content or ""
+    print(delta, end="", flush=True)
+print()
+
+# Non-streaming
+res = client.chat.completions.create(
+    model="llama3.2:1b",
+    messages=[{"role": "user", "content": "Hello!"}],
+    stream=False,
+)
+print(res.choices[0].message.content)
+```
+</details>
+
 ## Configuration
 
 Configuration is loaded from `~/.ollama-lite/config.json` with environment variable overrides:
