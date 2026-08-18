@@ -276,6 +276,7 @@ echo -e "  ${BOLD}ollama-lite import-ollama${NC}                 # Import existi
 echo -e "  ${BOLD}ollama-lite pull smollm:135m${NC}              # Download model"
 echo -e "  ${BOLD}ollama-lite list${NC}                        # List installed models"
 echo -e "  ${BOLD}ollama-lite serve${NC}                       # Start HTTP API server (11434)"
+echo -e "  ${BOLD}ollama-lite serve end${NC}                   # Stop HTTP API server"
 echo -e "  ${BOLD}ollama-lite benchmark llama3.2:1b${NC}       # Run inference benchmark"
 echo ""
 echo -e "If 'ollama-lite' is not immediately recognized in your current terminal, run:"

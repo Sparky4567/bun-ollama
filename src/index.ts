@@ -10,6 +10,7 @@ import {
   cliRm,
   cliStop,
   cliServe,
+  cliServeEnd,
   cliBenchmark,
   cliConfig,
   printHelp,
@@ -168,7 +169,7 @@ async function main() {
       break;
 
     case "serve":
-      await cliServe(config);
+      await cliServe(parsed.args, config);
       break;
 
     case "benchmark":

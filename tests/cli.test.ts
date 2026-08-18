@@ -62,4 +62,19 @@ describe("CLI Argument Parsing", () => {
     expect(res.command).toBe("import-ollama");
     expect(res.args).toEqual(["--path", "~/.ollama/models", "--copy"]);
   });
+
+  it("parses serve end command and subarguments", () => {
+    const res1 = parseCliArgs(["serve", "end"]);
+    expect(res1.command).toBe("serve");
+    expect(res1.args).toEqual(["end"]);
+
+    const res2 = parseCliArgs(["serve", "stop"]);
+    expect(res2.command).toBe("serve");
+    expect(res2.args).toEqual(["stop"]);
+
+    const res3 = parseCliArgs(["--quiet", "serve", "end"]);
+    expect(res3.command).toBe("serve");
+    expect(res3.args).toEqual(["end"]);
+    expect(res3.logLevel).toBe("warn");
+  });
 });

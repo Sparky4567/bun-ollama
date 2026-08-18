@@ -103,6 +103,7 @@ bun run src/index.ts run llama3.2:1b "Why is the sky blue?"
 | `rm <model>` | Remove model and unreferenced blobs | `bun run src/index.ts rm llama3.2:1b` |
 | `stop <model>` | Stop active inference process | `bun run src/index.ts stop llama3.2:1b` |
 | `serve` | Start Ollama Lite HTTP API daemon | `bun run src/index.ts serve --quiet` |
+| `serve end` | Stop running Ollama Lite HTTP API daemon | `bun run src/index.ts serve end` |
 | `benchmark <model>` | Run inference benchmark & tok/s metrics | `bun run src/index.ts benchmark llama3.2:1b` |
 | `config [get/set/list]` | View or update persistent configuration | `bun run src/index.ts config set logLevel none` |
 
@@ -145,6 +146,7 @@ bun run src/index.ts run bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M
 
 ### Ollama-Compatible API
 - `GET  /` - Service health status
+- `GET  /health` - JSON health check
 - `GET  /api/tags` - List installed models
 - `GET  /api/ps` - List running model processes
 - `POST /api/show` - Show model manifest
@@ -152,6 +154,7 @@ bun run src/index.ts run bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M
 - `POST /api/delete` - Delete model
 - `POST /api/chat` - Chat completions (streaming NDJSON & non-streaming)
 - `POST /api/generate` - Text completions (streaming NDJSON & non-streaming)
+- `POST /api/shutdown` - Gracefully stop Ollama Lite daemon and all inference processes
 
 ### OpenAI-Compatible API
 - `GET  /v1/models` - List models

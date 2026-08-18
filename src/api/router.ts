@@ -16,10 +16,15 @@ import { logger } from "../utils/logging.ts";
 export class ApiRouter {
   private config: Config;
   private processManager: ProcessManager;
+  private onShutdown?: () => Promise<void> | void;
 
   constructor(config: Config, processManager: ProcessManager) {
     this.config = config;
     this.processManager = processManager;
+  }
+
+  setShutdownHandler(handler: () => Promise<void> | void): void {
+    this.onShutdown = handler;
   }
 
   async handle(req: Request): Promise<Response> {
@@ -51,6 +56,31 @@ export class ApiRouter {
       // Health
       else if ((pathname === "/health" || pathname === "/api/health") && method === "GET") {
         res = handleHealth();
+      }
+      // Server Shutdown / Stop
+      else if (
+        (pathname === "/api/shutdown" ||
+          pathname === "/api/serve/end" ||
+          pathname === "/api/serve/stop" ||
+          pathname === "/shutdown") &&
+        (method === "POST" || method === "GET")
+      ) {
+        if (this.onShutdown) {
+          try {
+            const maybePromise = this.onShutdown();
+            if (maybePromise instanceof Promise) {
+              maybePromise.catch((err) => {
+                logger.error(`Error in shutdown handler: ${err.message}`);
+              });
+            }
+          } catch (err: any) {
+            logger.error(`Error invoking shutdown handler: ${err.message}`);
+          }
+        }
+        res = Response.json({
+          status: "ok",
+          message: "Ollama Lite server is shutting down",
+        });
       }
       // Ollama Models & Tags
       else if (pathname === "/api/tags" && method === "GET") {

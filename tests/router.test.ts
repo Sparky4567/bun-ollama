@@ -47,6 +47,34 @@ describe("API Router", () => {
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
   });
 
+  it("handles POST /api/shutdown and executes shutdown handler", async () => {
+    let handlerCalled = false;
+    router.setShutdownHandler(() => {
+      handlerCalled = true;
+    });
+
+    const req = new Request("http://localhost:11434/api/shutdown", { method: "POST" });
+    const res = await router.handle(req);
+    expect(res.status).toBe(200);
+    const json: any = await res.json();
+    expect(json.status).toBe("ok");
+    expect(handlerCalled).toBe(true);
+  });
+
+  it("handles POST /api/serve/end as shutdown alias", async () => {
+    let handlerCalled = false;
+    router.setShutdownHandler(() => {
+      handlerCalled = true;
+    });
+
+    const req = new Request("http://localhost:11434/api/serve/end", { method: "POST" });
+    const res = await router.handle(req);
+    expect(res.status).toBe(200);
+    const json: any = await res.json();
+    expect(json.status).toBe("ok");
+    expect(handlerCalled).toBe(true);
+  });
+
   it("returns 404 for unknown routes", async () => {
     const req = new Request("http://localhost:11434/api/nonexistent");
     const res = await router.handle(req);

@@ -5,7 +5,7 @@ import { listManifests, getManifest, deleteModel } from "./models/storage.ts";
 import { downloadModel, type DownloadProgress } from "./models/downloader.ts";
 import { detectOllamaDirectory, importAllLocalOllamaModels } from "./models/ollama-local.ts";
 import { ProcessManager } from "./runtime/process-manager.ts";
-import { startServer } from "./api/server.ts";
+import { startServer, stopRunningServer } from "./api/server.ts";
 import { type LogLevel, logger } from "./utils/logging.ts";
 
 function formatBytes(bytes: number): string {
@@ -278,9 +278,38 @@ export async function cliStop(modelName: string, config: Config): Promise<void> 
 }
 
 /**
+ * CLI Serve End Command - stops the running server daemon
+ */
+export async function cliServeEnd(config: Config): Promise<void> {
+  const result = await stopRunningServer(config);
+  console.log(result.message);
+}
+
+/**
  * CLI Serve Command
  */
-export async function cliServe(config: Config): Promise<void> {
+export async function cliServe(
+  argsOrConfig?: string[] | Config,
+  configOverride?: Config
+): Promise<void> {
+  let args: string[] = [];
+  let config: Config;
+
+  if (Array.isArray(argsOrConfig)) {
+    args = argsOrConfig;
+    config = configOverride || loadConfig();
+  } else if (argsOrConfig && typeof argsOrConfig === "object") {
+    config = argsOrConfig;
+  } else {
+    config = loadConfig();
+  }
+
+  const subCommand = args[0]?.toLowerCase();
+  if (subCommand === "end" || subCommand === "stop" || subCommand === "down") {
+    await cliServeEnd(config);
+    return;
+  }
+
   const instance = startServer(config);
 
   const shutdown = async () => {
@@ -736,7 +765,7 @@ Commands:
   show <model>            Show detailed metadata for a model
   rm <model>              Remove a model and unused storage blobs
   stop <model>            Stop an active inference server
-  serve                   Start the HTTP API daemon (default port: 11434)
+  serve [end|stop]        Start or stop the HTTP API daemon (default port: 11434)
   benchmark <model>       Run inference benchmark passes and compute tok/s metrics
   config [get|set|list]   View or update persistent configuration (e.g. config set logLevel none)
   help                    Show this help message
@@ -750,6 +779,8 @@ Examples:
   ollama-lite import-ollama --path ~/.ollama/models --copy
   ollama-lite run llama3.2:1b "Explain quantum computing in one sentence" --quiet
   ollama-lite pull qwen2.5:0.5b --silent
+  ollama-lite serve
+  ollama-lite serve end
   ollama-lite serve --quiet
   ollama-lite serve --log-level none
   ollama-lite config set logLevel warn
