@@ -7,7 +7,8 @@ A lightweight local LLM manager written in TypeScript and running on the [Bun](h
 Ollama Lite provides an Ollama-compatible CLI and HTTP REST API, delegating heavy neural network inference, KV cache management, and token generation to native `llama-server`.
 
 Bun acts as fast, lightweight glue responsible for:
-- Model discovery & Hugging Face resolution
+- Model discovery & resolution (Hugging Face + official `registry.ollama.ai`)
+- Local `~/.ollama` model importing with zero-copy symlinks
 - Streaming model downloads with on-the-fly SHA-256 verification
 - Content-addressed blob storage & JSON manifests
 - Lifecycle management (lazy start, health checks, dynamic port allocation)
@@ -94,7 +95,8 @@ bun run src/index.ts run llama3.2:1b "Why is the sky blue?"
 | Command | Description | Example |
 |---|---|---|
 | `run <model> [prompt]` | Interactive chat or single-shot generation | `bun run src/index.ts run llama3.2:1b` |
-| `pull <model>` | Download model from Hugging Face | `bun run src/index.ts pull qwen2.5:0.5b` |
+| `pull <model>` | Download model from Ollama Registry or Hugging Face | `bun run src/index.ts pull ollama:deepseek-r1:8b` |
+| `import-ollama [opts]` | Import models from local `~/.ollama` (zero-copy symlink) | `bun run src/index.ts import-ollama` |
 | `list`, `ls` | List all locally stored models | `bun run src/index.ts list` |
 | `ps` | List running model processes | `bun run src/index.ts ps` |
 | `show <model>` | Show model metadata and manifest | `bun run src/index.ts show llama3.2:1b` |
@@ -104,15 +106,36 @@ bun run src/index.ts run llama3.2:1b "Why is the sky blue?"
 | `benchmark <model>` | Run inference benchmark & tok/s metrics | `bun run src/index.ts benchmark llama3.2:1b` |
 | `config [get/set/list]` | View or update persistent configuration | `bun run src/index.ts config set logLevel none` |
 
-## Model Catalog & Custom Models
+## Model Sources & Catalog
 
-### Built-in Aliases
+### 1. Pure Ollama Models (Official `registry.ollama.ai`)
+Pull and run any model directly from the official Ollama registry with full OCI layer support (GGUF weights, Modelfile parameters, chat templates, stop tokens):
+```bash
+# Explicit ollama: prefix
+bun run src/index.ts pull ollama:deepseek-r1:8b
+bun run src/index.ts run ollama:mistral:7b
+
+# Short name with automatic fallback
+bun run src/index.ts pull smollm:135m
+```
+
+### 2. Import Existing Local Ollama Models (`~/.ollama`)
+If you already have models downloaded by the official Ollama daemon on your system, import them into Ollama Lite without re-downloading gigabytes of data. Ollama Lite creates zero-copy symlinks to your existing blobs:
+```bash
+# Auto-detects ~/.ollama/models and imports all models
+bun run src/index.ts import-ollama
+
+# Or specify a custom path or copy mode
+bun run src/index.ts import-ollama --path /var/lib/ollama/models --copy
+```
+
+### 3. Built-in Hugging Face Aliases
 - `llama3.2:1b` / `llama3.2:3b` (Llama 3.2 Instruct)
 - `qwen2.5:0.5b` / `qwen2.5:1.5b` / `qwen2.5-coder:0.5b`
 - `smollm2:135m` / `smollm2:360m`
 - `gemma2:2b`
 
-### Custom Hugging Face Models
+### 4. Custom Hugging Face Repositories
 You can pull and run any Hugging Face GGUF repository directly:
 ```bash
 bun run src/index.ts run bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M

@@ -3,6 +3,7 @@ import { loadConfig } from "./config.ts";
 import {
   cliRun,
   cliPull,
+  cliImportOllama,
   cliList,
   cliPs,
   cliShow,
@@ -21,6 +22,8 @@ export * from "./models/resolver.ts";
 export * from "./models/manifest.ts";
 export * from "./models/storage.ts";
 export * from "./models/downloader.ts";
+export * from "./models/ollama-registry.ts";
+export * from "./models/ollama-local.ts";
 export * from "./runtime/port-manager.ts";
 export * from "./runtime/health-check.ts";
 export * from "./runtime/llama-server.ts";
@@ -135,6 +138,11 @@ async function main() {
 
     case "pull":
       await cliPull(parsed.args[0] || "", config);
+      break;
+
+    case "import-ollama":
+    case "import":
+      await cliImportOllama(parsed.args, config);
       break;
 
     case "list":

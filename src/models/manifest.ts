@@ -5,6 +5,8 @@ export interface ModelParameters {
   top_k?: number;
   repeat_penalty?: number;
   system_prompt?: string;
+  template?: string;
+  stop?: string[];
   [key: string]: any;
 }
 
@@ -19,6 +21,10 @@ export interface ModelManifest {
   blob_path: string;
   modified_at: string;
   parameters?: ModelParameters;
+  template?: string;
+  system?: string;
+  license?: string;
+  source?: "huggingface" | "ollama-registry" | "ollama-local" | "direct-url";
 }
 
 export function createManifest(params: {
@@ -30,6 +36,10 @@ export function createManifest(params: {
   filename: string;
   blobPath: string;
   parameters?: ModelParameters;
+  template?: string;
+  system?: string;
+  license?: string;
+  source?: "huggingface" | "ollama-registry" | "ollama-local" | "direct-url";
 }): ModelManifest {
   return {
     name: params.name,
@@ -42,5 +52,9 @@ export function createManifest(params: {
     blob_path: params.blobPath,
     modified_at: new Date().toISOString(),
     parameters: params.parameters || { context_size: 2048 },
+    template: params.template,
+    system: params.system,
+    license: params.license,
+    source: params.source,
   };
 }

@@ -1,3 +1,5 @@
+import type { ModelParameters } from "./manifest.ts";
+
 export interface ModelDescriptor {
   name: string;
   normalizedName: string;
@@ -8,6 +10,11 @@ export interface ModelDescriptor {
   context?: number;
   expectedSha256?: string;
   sizeBytes?: number;
+  source?: "huggingface" | "ollama-registry" | "ollama-local" | "direct-url";
+  template?: string;
+  system?: string;
+  license?: string;
+  parameters?: ModelParameters;
 }
 
 export interface ModelAlias {

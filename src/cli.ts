@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { type Config, loadConfig, saveConfig, ensureDirectories } from "./config.ts";
 import { listManifests, getManifest, deleteModel } from "./models/storage.ts";
 import { downloadModel, type DownloadProgress } from "./models/downloader.ts";
+import { detectOllamaDirectory, importAllLocalOllamaModels } from "./models/ollama-local.ts";
 import { ProcessManager } from "./runtime/process-manager.ts";
 import { startServer } from "./api/server.ts";
 import { type LogLevel, logger } from "./utils/logging.ts";
@@ -153,12 +154,87 @@ export async function cliShow(modelName: string, config: Config): Promise<void> 
   console.log(`Model:         ${manifest.name}`);
   console.log(`Digest:        ${manifest.digest}`);
   console.log(`Repository:    ${manifest.repository}`);
+  console.log(`Source:        ${manifest.source || "huggingface"}`);
   console.log(`Filename:      ${manifest.filename}`);
   console.log(`Quantization:  ${manifest.quantization}`);
   console.log(`Size:          ${formatBytes(manifest.size)}`);
   console.log(`Context Size:  ${manifest.parameters?.context_size || 2048}`);
+  if (manifest.system || manifest.parameters?.system_prompt) {
+    console.log(`System Prompt: ${manifest.system || manifest.parameters?.system_prompt}`);
+  }
+  if (manifest.parameters?.stop) {
+    console.log(`Stop Tokens:   ${JSON.stringify(manifest.parameters.stop)}`);
+  }
   console.log(`Blob Path:     ${manifest.blob_path}`);
   console.log(`Modified:      ${new Date(manifest.modified_at).toLocaleString()}`);
+}
+
+/**
+ * CLI Import Ollama Command
+ */
+export async function cliImportOllama(args: string[], config: Config): Promise<void> {
+  ensureDirectories(config);
+
+  let customPath: string | undefined;
+  let mode: "symlink" | "copy" = "symlink";
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--path" || arg === "-p") {
+      customPath = args[++i];
+    } else if (arg === "--copy") {
+      mode = "copy";
+    } else if (arg === "--symlink") {
+      mode = "symlink";
+    } else if (!customPath && !arg?.startsWith("-")) {
+      customPath = arg;
+    }
+  }
+
+  const detectedDir = detectOllamaDirectory(customPath);
+  if (!detectedDir) {
+    console.error("No Ollama models directory found. Checked ~/.ollama/models, /usr/share/ollama, and environment.");
+    console.error("You can specify a path explicitly with: ollama-lite import-ollama --path /path/to/.ollama/models");
+    process.exit(1);
+  }
+
+  console.log(`Discovered Ollama models directory at: ${detectedDir}`);
+  console.log(`Import mode: ${mode === "symlink" ? "symlink (zero disk duplication)" : "copy"}\n`);
+
+  const summary = await importAllLocalOllamaModels({
+    ollamaDir: detectedDir,
+    mode,
+    config,
+  });
+
+  if (summary.discoveredCount === 0) {
+    console.log("No valid Ollama models found to import.");
+    return;
+  }
+
+  console.log(`Found ${summary.discoveredCount} model(s) in local Ollama store:`);
+  if (summary.imported.length > 0) {
+    console.log("\nSuccessfully imported:");
+    for (const m of summary.imported) {
+      console.log(`  ✓ ${m.name} (${formatBytes(m.size)}) [${m.quantization}] -> ${m.blob_path}`);
+    }
+  }
+
+  if (summary.skipped.length > 0) {
+    console.log("\nSkipped (already registered in Ollama Lite):");
+    for (const name of summary.skipped) {
+      console.log(`  - ${name}`);
+    }
+  }
+
+  if (summary.errors.length > 0) {
+    console.log("\nFailed to import:");
+    for (const err of summary.errors) {
+      console.log(`  ✗ ${err.model}: ${err.error}`);
+    }
+  }
+
+  console.log(`\nImport complete: ${summary.imported.length} new, ${summary.skipped.length} skipped, ${summary.errors.length} failed.`);
 }
 
 /**
@@ -653,7 +729,8 @@ Flags:
 
 Commands:
   run <model> [prompt]    Run a model (starts interactive chat if prompt is omitted)
-  pull <model>            Download a model from Hugging Face / registry
+  pull <model>            Download a model from Ollama Registry or Hugging Face
+  import-ollama [opts]    Import existing models from local ~/.ollama store (--path, --copy)
   list, ls                List all downloaded models
   ps                      List all currently running model processes
   show <model>            Show detailed metadata for a model
@@ -667,6 +744,10 @@ Commands:
 
 Examples:
   ollama-lite run llama3.2:1b
+  ollama-lite run ollama:deepseek-r1:8b
+  ollama-lite pull smollm:135m
+  ollama-lite import-ollama
+  ollama-lite import-ollama --path ~/.ollama/models --copy
   ollama-lite run llama3.2:1b "Explain quantum computing in one sentence" --quiet
   ollama-lite pull qwen2.5:0.5b --silent
   ollama-lite serve --quiet

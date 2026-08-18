@@ -169,9 +169,13 @@ export async function downloadModel(
       repository: descriptor.repository,
       filename: descriptor.filename,
       blobPath: finalBlobPath,
-      parameters: {
+      parameters: descriptor.parameters || {
         context_size: descriptor.context || cfg.defaultContext,
       },
+      template: descriptor.template,
+      system: descriptor.system,
+      license: descriptor.license,
+      source: descriptor.source || "huggingface",
     });
 
     await saveManifest(manifest, cfg);

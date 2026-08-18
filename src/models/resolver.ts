@@ -1,9 +1,15 @@
 import { MODEL_CATALOG, type ModelDescriptor } from "./registry.ts";
+import { resolveOllamaRegistryModel } from "./ollama-registry.ts";
 import { normalizeModelName } from "../utils/paths.ts";
 import { logger } from "../utils/logging.ts";
 
 /**
  * Resolves a model name string to a full ModelDescriptor containing download URL and metadata.
+ * Supports:
+ * - Direct HTTP(S) URLs
+ * - Built-in catalog aliases (e.g. "llama3.2:1b", "qwen2.5:0.5b")
+ * - Hugging Face repositories (e.g. "bartowski/Llama-3.2-1B-Instruct-GGUF")
+ * - Official Ollama registry models (e.g. "ollama:llama3.2:1b", "deepseek-r1:8b", "smollm:135m")
  */
 export async function resolveModel(
   modelInput: string,
@@ -13,6 +19,11 @@ export async function resolveModel(
 
   // 1. Direct HTTP(S) URL
   if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    // If it's a direct registry.ollama.ai or ollama.com URL, delegate to Ollama resolver
+    if (/^https?:\/\/(registry\.ollama\.ai|ollama\.com|ollama\.ai)/i.test(trimmed)) {
+      return await resolveOllamaRegistryModel(trimmed);
+    }
+
     const url = new URL(trimmed);
     const filename = url.pathname.split("/").pop() || "model.gguf";
     const name = filename.replace(/\.gguf$/i, "");
@@ -24,15 +35,26 @@ export async function resolveModel(
       filename,
       downloadUrl: trimmed,
       context: 2048,
+      source: "direct-url",
     };
   }
 
-  // 2. Parse model name and optional quantization tag
+  // 2. Explicit Ollama protocol or prefix ("ollama://...", "ollama:...", "registry.ollama.ai/...")
+  if (
+    trimmed.startsWith("ollama://") ||
+    trimmed.startsWith("ollama:") ||
+    /^registry\.ollama\.ai\//i.test(trimmed) ||
+    /^ollama\.com\//i.test(trimmed) ||
+    /^ollama\.ai\//i.test(trimmed)
+  ) {
+    return await resolveOllamaRegistryModel(trimmed);
+  }
+
+  // 3. Parse model name and optional quantization tag for Hugging Face / catalog
   // Formats: "llama3.2:1b", "llama3.2:1b-q4_k_m", "llama3.2:1b:q8_0", "repo/name:Q4_K_M", "hf.co/repo/name"
-  let cleanInput = trimmed.replace(/^hf\.co\//i, "").replace(/^huggingface\.co\//i, "");
+  let cleanInput = trimmed.replace(/^hf\.co\//i, "").replace(/^huggingface\.co\//i, "").replace(/^hf:\/\//i, "");
   let requestedQuant: string | undefined;
 
-  // Check if quant tag is embedded via colon or hyphen suffix (e.g. "llama3.2:1b:q4_k_m" or "llama3.2:1b-q4_k_m")
   const parts = cleanInput.split(":");
   let baseName = parts[0] || "";
   let tag = parts[1] || "";
@@ -70,7 +92,7 @@ export async function resolveModel(
 
   const quant = (requestedQuant || preferredQuantization).toUpperCase();
 
-  // 3. Check built-in catalog
+  // 4. Check built-in catalog
   const catalogEntry = MODEL_CATALOG[baseName.toLowerCase()] || MODEL_CATALOG[cleanInput.toLowerCase()];
   if (catalogEntry) {
     const targetQuant = catalogEntry.files[quant] ? quant : catalogEntry.defaultQuant;
@@ -85,10 +107,11 @@ export async function resolveModel(
       filename,
       downloadUrl,
       context: catalogEntry.context,
+      source: "huggingface",
     };
   }
 
-  // 4. If it looks like a Hugging Face repository ("user/repo" or "repo")
+  // 5. If it looks like a Hugging Face repository ("user/repo")
   if (baseName.includes("/")) {
     logger.info(`Resolving Hugging Face repository: ${baseName}`);
     try {
@@ -97,50 +120,56 @@ export async function resolveModel(
         headers: { "User-Agent": "bun-ollama-lite/1.0" },
       });
 
-      if (!res.ok) {
-        throw new Error(`Hugging Face API returned status ${res.status} (${res.statusText}) for model "${baseName}"`);
+      if (res.ok) {
+        const info: any = await res.json();
+        const siblings: Array<{ rfilename: string }> = info.siblings || [];
+        const ggufFiles = siblings
+          .map((s) => s.rfilename)
+          .filter((name) => name.toLowerCase().endsWith(".gguf"));
+
+        if (ggufFiles.length > 0) {
+          // Find file matching quantization or best match
+          let matchedFile = ggufFiles.find((f) =>
+            f.toUpperCase().includes(quant.toUpperCase())
+          );
+
+          if (!matchedFile) {
+            // Fallback to Q4_K_M or first GGUF
+            matchedFile =
+              ggufFiles.find((f) => f.toUpperCase().includes("Q4_K_M")) ||
+              ggufFiles.find((f) => f.toUpperCase().includes("Q4_0")) ||
+              ggufFiles[0]!;
+          }
+
+          const downloadUrl = `https://huggingface.co/${baseName}/resolve/main/${matchedFile}`;
+
+          return {
+            name: trimmed,
+            normalizedName: normalizeModelName(trimmed),
+            repository: baseName,
+            quantization: quant,
+            filename: matchedFile,
+            downloadUrl,
+            context: 2048,
+            source: "huggingface",
+          };
+        }
       }
-
-      const info: any = await res.json();
-      const siblings: Array<{ rfilename: string }> = info.siblings || [];
-      const ggufFiles = siblings
-        .map((s) => s.rfilename)
-        .filter((name) => name.toLowerCase().endsWith(".gguf"));
-
-      if (ggufFiles.length === 0) {
-        throw new Error(`No .gguf files found in repository "${baseName}"`);
-      }
-
-      // Find file matching quantization or best match
-      let matchedFile = ggufFiles.find((f) =>
-        f.toUpperCase().includes(quant.toUpperCase())
-      );
-
-      if (!matchedFile) {
-        // Fallback to Q4_K_M or first GGUF
-        matchedFile =
-          ggufFiles.find((f) => f.toUpperCase().includes("Q4_K_M")) ||
-          ggufFiles.find((f) => f.toUpperCase().includes("Q4_0")) ||
-          ggufFiles[0]!;
-      }
-
-      const downloadUrl = `https://huggingface.co/${baseName}/resolve/main/${matchedFile}`;
-
-      return {
-        name: trimmed,
-        normalizedName: normalizeModelName(trimmed),
-        repository: baseName,
-        quantization: quant,
-        filename: matchedFile,
-        downloadUrl,
-        context: 2048,
-      };
-    } catch (err: any) {
-      throw new Error(`Failed to resolve Hugging Face model "${trimmed}": ${err.message}`);
+    } catch {
+      // If Hugging Face fails, fall through to Ollama registry check below
     }
   }
 
+  // 6. Try resolving against official Ollama registry (registry.ollama.ai)
+  try {
+    logger.debug(`Attempting to resolve "${trimmed}" from Ollama registry...`);
+    const ollamaDescriptor = await resolveOllamaRegistryModel(trimmed);
+    return ollamaDescriptor;
+  } catch (ollamaErr: any) {
+    logger.debug(`Ollama registry resolution failed: ${ollamaErr.message}`);
+  }
+
   throw new Error(
-    `Unsupported model "${trimmed}". Please specify a known model alias (e.g. "llama3.2:1b", "qwen2.5:0.5b", "gemma2:2b") or a Hugging Face repo (e.g. "bartowski/Llama-3.2-1B-Instruct-GGUF").`
+    `Unsupported model "${trimmed}". Please specify a known model alias (e.g. "llama3.2:1b", "smollm:135m"), an Ollama model ("ollama:model:tag"), or a Hugging Face repo (e.g. "bartowski/Llama-3.2-1B-Instruct-GGUF").`
   );
 }

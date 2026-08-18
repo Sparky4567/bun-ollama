@@ -92,11 +92,35 @@ export async function handleShowModel(
     return Response.json({ error: `Model "${modelName}" not found` }, { status: 404 });
   }
 
+  const parametersStr = Object.entries(manifest.parameters || {})
+    .filter(([k]) => k !== "system_prompt" && k !== "template")
+    .map(([k, v]) => `${k} ${Array.isArray(v) ? JSON.stringify(v) : v}`)
+    .join("\n") || `num_ctx ${manifest.parameters?.context_size || 2048}`;
+
+  const modelfileLines = [
+    `# Model manifest for ${manifest.name}`,
+    `FROM ${manifest.filename}`,
+  ];
+  if (manifest.system || manifest.parameters?.system_prompt) {
+    modelfileLines.push(`SYSTEM """${manifest.system || manifest.parameters?.system_prompt}"""`);
+  }
+  if (manifest.template) {
+    modelfileLines.push(`TEMPLATE """${manifest.template}"""`);
+  }
+  if (manifest.parameters) {
+    for (const [k, v] of Object.entries(manifest.parameters)) {
+      if (k !== "system_prompt" && k !== "template") {
+        modelfileLines.push(`PARAMETER ${k} ${Array.isArray(v) ? JSON.stringify(v) : v}`);
+      }
+    }
+  }
+
   return Response.json({
-    license: "Unknown",
-    modelfile: `# Model manifest for ${manifest.name}\nFROM ${manifest.filename}\nPARAMETER num_ctx ${manifest.parameters?.context_size || 2048}`,
-    parameters: `num_ctx ${manifest.parameters?.context_size || 2048}`,
-    template: "{{ .System }}\n{{ .Prompt }}",
+    license: manifest.license || "Unknown",
+    modelfile: modelfileLines.join("\n"),
+    parameters: parametersStr,
+    template: manifest.template || "{{ .System }}\n{{ .Prompt }}",
+    system: manifest.system || manifest.parameters?.system_prompt || "",
     details: {
       parent_model: "",
       format: manifest.format,

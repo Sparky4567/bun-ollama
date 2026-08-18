@@ -56,4 +56,10 @@ describe("CLI Argument Parsing", () => {
     expect(res.args).toEqual(["llama3.2:1b", "-q is an argument"]);
     expect(res.logLevel).toBeUndefined();
   });
+
+  it("parses import-ollama command and flags", () => {
+    const res = parseCliArgs(["import-ollama", "--path", "~/.ollama/models", "--copy"]);
+    expect(res.command).toBe("import-ollama");
+    expect(res.args).toEqual(["--path", "~/.ollama/models", "--copy"]);
+  });
 });

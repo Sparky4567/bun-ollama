@@ -24,4 +24,12 @@ describe("Model Resolver", () => {
     expect(desc.filename).toBe("custom-model.gguf");
     expect(desc.downloadUrl).toBe(url);
   });
+
+  it("resolves explicit ollama protocol prefix models from Ollama registry", async () => {
+    const desc = await resolveModel("ollama:smollm:135m");
+    expect(desc.name).toBe("smollm:135m");
+    expect(desc.source).toBe("ollama-registry");
+    expect(desc.downloadUrl).toContain("registry.ollama.ai/v2/library/smollm/blobs/");
+    expect(desc.expectedSha256).toBeDefined();
+  });
 });
