@@ -10,7 +10,7 @@ dist/
 models/blobs/
 *.part
 *.gguf
-runtime/
+/runtime/
 
 # logs
 logs/

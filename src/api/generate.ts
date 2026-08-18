@@ -1,5 +1,7 @@
 import type { ProcessManager } from "../runtime/process-manager.ts";
 import { type Config } from "../config.ts";
+import { getManifest } from "../models/storage.ts";
+import { proxyCloudGenerate, proxyCloudOpenAICompletions } from "../runtime/cloud-client.ts";
 import { logger } from "../utils/logging.ts";
 
 export interface OllamaGenerateRequest {
@@ -56,6 +58,30 @@ export async function handleOllamaGenerate(
   }
 
   processManager.touch(modelName);
+
+  // If this is an Ollama Cloud model, proxy to Ollama Cloud
+  if (modelProc.isCloud) {
+    const manifest = await getManifest(modelName, config);
+    return await proxyCloudGenerate({
+      req,
+      body,
+      manifest: manifest || ({
+        name: modelName,
+        digest: modelProc.digest,
+        size: modelProc.size,
+        format: "cloud",
+        quantization: "cloud",
+        repository: "registry.ollama.ai",
+        filename: "(cloud)",
+        blob_path: "",
+        modified_at: new Date().toISOString(),
+        is_cloud: true,
+        remote_host: modelProc.remoteHost,
+        remote_model: modelProc.remoteModel,
+      } as any),
+      config,
+    });
+  }
 
   // Combine system prompt if provided
   let fullPrompt = prompt;
@@ -242,6 +268,29 @@ export async function handleOpenAICompletions(
 
   const modelProc = await processManager.ensureModelReady(modelName);
   processManager.touch(modelName);
+
+  if (modelProc.isCloud) {
+    const manifest = await getManifest(modelName, config);
+    return await proxyCloudOpenAICompletions({
+      req,
+      body,
+      manifest: manifest || ({
+        name: modelName,
+        digest: modelProc.digest,
+        size: modelProc.size,
+        format: "cloud",
+        quantization: "cloud",
+        repository: "registry.ollama.ai",
+        filename: "(cloud)",
+        blob_path: "",
+        modified_at: new Date().toISOString(),
+        is_cloud: true,
+        remote_host: modelProc.remoteHost,
+        remote_model: modelProc.remoteModel,
+      } as any),
+      config,
+    });
+  }
 
   const upstreamRes = await fetch(`http://127.0.0.1:${modelProc.port}/v1/completions`, {
     method: "POST",

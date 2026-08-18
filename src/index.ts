@@ -13,6 +13,9 @@ import {
   cliServeEnd,
   cliBenchmark,
   cliConfig,
+  cliSignin,
+  cliSignout,
+  cliAuthStatus,
   printHelp,
 } from "./cli.ts";
 import { type LogLevel } from "./utils/logging.ts";
@@ -29,6 +32,8 @@ export * from "./runtime/port-manager.ts";
 export * from "./runtime/health-check.ts";
 export * from "./runtime/llama-server.ts";
 export * from "./runtime/process-manager.ts";
+export * from "./runtime/cloud-client.ts";
+export * from "./runtime/auth.ts";
 export * from "./api/server.ts";
 export * from "./api/router.ts";
 export * from "./cli.ts";
@@ -170,6 +175,21 @@ async function main() {
 
     case "serve":
       await cliServe(parsed.args, config);
+      break;
+
+    case "signin":
+    case "login":
+      await cliSignin(parsed.args, config);
+      break;
+
+    case "signout":
+    case "logout":
+      await cliSignout(config);
+      break;
+
+    case "auth":
+    case "whoami":
+      await cliAuthStatus(config);
       break;
 
     case "benchmark":

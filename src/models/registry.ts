@@ -10,11 +10,15 @@ export interface ModelDescriptor {
   context?: number;
   expectedSha256?: string;
   sizeBytes?: number;
-  source?: "huggingface" | "ollama-registry" | "ollama-local" | "direct-url";
+  source?: "huggingface" | "ollama-registry" | "ollama-local" | "direct-url" | "ollama-cloud";
   template?: string;
   system?: string;
   license?: string;
   parameters?: ModelParameters;
+  isCloud?: boolean;
+  remoteHost?: string;
+  remoteModel?: string;
+  capabilities?: string[];
 }
 
 export interface ModelAlias {

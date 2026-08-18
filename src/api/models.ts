@@ -14,21 +14,25 @@ import { logger } from "../utils/logging.ts";
 export async function handleListTags(config: Config): Promise<Response> {
   const manifests = await listManifests(config);
 
-  const models = manifests.map((m) => ({
-    name: m.name,
-    model: m.name,
-    modified_at: m.modified_at,
-    size: m.size,
-    digest: m.digest,
-    details: {
-      parent_model: "",
-      format: m.format,
-      family: m.name.split(":")[0] || "llama",
-      families: [m.name.split(":")[0] || "llama"],
-      parameter_size: m.name.includes(":") ? m.name.split(":")[1]?.toUpperCase() : "unknown",
-      quantization_level: m.quantization,
-    },
-  }));
+  const models = manifests.map((m) => {
+    const isCloud = Boolean(m.is_cloud || m.source === "ollama-cloud" || m.format === "cloud");
+    return {
+      name: m.name,
+      model: m.name,
+      modified_at: m.modified_at,
+      size: m.size,
+      digest: m.digest,
+      details: {
+        parent_model: "",
+        format: m.format || (isCloud ? "cloud" : "gguf"),
+        family: m.name.split(":")[0] || "llama",
+        families: [m.name.split(":")[0] || "llama"],
+        parameter_size: m.remote_model || (m.name.includes(":") ? m.name.split(":")[1]?.toUpperCase() : "unknown"),
+        quantization_level: m.quantization,
+      },
+      ...(isCloud ? { remote_host: m.remote_host, remote_model: m.remote_model, is_cloud: true } : {}),
+    };
+  });
 
   return Response.json({ models });
 }
@@ -52,16 +56,17 @@ export async function handleListRunning(
       digest: p.digest,
       details: {
         parent_model: "",
-        format: "gguf",
+        format: p.isCloud ? "cloud" : "gguf",
         family: p.model.split(":")[0] || "llama",
         families: [p.model.split(":")[0] || "llama"],
-        parameter_size: p.model.includes(":") ? p.model.split(":")[1]?.toUpperCase() : "unknown",
-        quantization_level: "Q4_K_M",
+        parameter_size: p.remoteModel || (p.model.includes(":") ? p.model.split(":")[1]?.toUpperCase() : "unknown"),
+        quantization_level: p.isCloud ? "cloud" : "Q4_K_M",
       },
       expires_at: expiresAt,
       size_vram: 0,
       port: p.port,
       state: p.state,
+      is_cloud: Boolean(p.isCloud),
     };
   });
 
@@ -92,15 +97,23 @@ export async function handleShowModel(
     return Response.json({ error: `Model "${modelName}" not found` }, { status: 404 });
   }
 
+  const isCloud = Boolean(manifest.is_cloud || manifest.source === "ollama-cloud" || manifest.format === "cloud");
+
   const parametersStr = Object.entries(manifest.parameters || {})
     .filter(([k]) => k !== "system_prompt" && k !== "template")
     .map(([k, v]) => `${k} ${Array.isArray(v) ? JSON.stringify(v) : v}`)
-    .join("\n") || `num_ctx ${manifest.parameters?.context_size || 2048}`;
+    .join("\n") || `num_ctx ${manifest.parameters?.context_size || (isCloud ? 131072 : 2048)}`;
 
   const modelfileLines = [
     `# Model manifest for ${manifest.name}`,
-    `FROM ${manifest.filename}`,
+    `FROM ${manifest.filename || (isCloud ? "(cloud)" : "model.gguf")}`,
   ];
+  if (isCloud && manifest.remote_host) {
+    modelfileLines.push(`PARAMETER remote_host "${manifest.remote_host}"`);
+  }
+  if (isCloud && manifest.remote_model) {
+    modelfileLines.push(`PARAMETER remote_model "${manifest.remote_model}"`);
+  }
   if (manifest.system || manifest.parameters?.system_prompt) {
     modelfileLines.push(`SYSTEM """${manifest.system || manifest.parameters?.system_prompt}"""`);
   }
@@ -123,17 +136,19 @@ export async function handleShowModel(
     system: manifest.system || manifest.parameters?.system_prompt || "",
     details: {
       parent_model: "",
-      format: manifest.format,
+      format: manifest.format || (isCloud ? "cloud" : "gguf"),
       family: manifest.name.split(":")[0] || "llama",
       families: [manifest.name.split(":")[0] || "llama"],
-      parameter_size: manifest.name.includes(":") ? manifest.name.split(":")[1]?.toUpperCase() : "unknown",
+      parameter_size: manifest.remote_model || (manifest.name.includes(":") ? manifest.name.split(":")[1]?.toUpperCase() : "unknown"),
       quantization_level: manifest.quantization,
     },
     model_info: {
       "general.architecture": manifest.name.split(":")[0] || "llama",
       "general.file_type": manifest.quantization,
       "general.parameter_count": manifest.size,
+      ...(isCloud ? { "remote_host": manifest.remote_host, "remote_model": manifest.remote_model } : {}),
     },
+    ...(isCloud ? { remote_host: manifest.remote_host, remote_model: manifest.remote_model, is_cloud: true } : {}),
     modified_at: manifest.modified_at,
   });
 }

@@ -194,23 +194,36 @@ export async function resolveOllamaRegistryModel(
   const ref = parseOllamaModelRef(modelInput);
   logger.info(`Querying Ollama registry for ${ref.namespace}/${ref.model}:${ref.tag}...`);
 
-  const { manifest, token } = await fetchOllamaRegistryManifest(
-    ref.namespace,
-    ref.model,
-    ref.tag,
-    { signal: options?.signal }
-  );
-
-  // Find model layer (raw GGUF weights)
-  const modelLayer = manifest.layers.find(
-    (l) => l.mediaType === "application/vnd.ollama.image.model"
-  );
-
-  if (!modelLayer) {
-    throw new Error(
-      `No model layer (GGUF) found in Ollama registry manifest for "${ref.namespace}/${ref.model}:${ref.tag}"`
+  let manifestData: { manifest: OllamaRegistryManifest; token: string | null };
+  try {
+    manifestData = await fetchOllamaRegistryManifest(
+      ref.namespace,
+      ref.model,
+      ref.tag,
+      { signal: options?.signal }
     );
+  } catch (err: any) {
+    // If standard tag failed, try cloud tag fallback if not already specified
+    if (!ref.tag.endsWith("-cloud") && ref.tag !== "cloud") {
+      const fallbackTag = ref.tag === "latest" ? "cloud" : `${ref.tag}-cloud`;
+      logger.debug(`Attempting cloud tag fallback "${fallbackTag}" for ${ref.namespace}/${ref.model}...`);
+      try {
+        manifestData = await fetchOllamaRegistryManifest(
+          ref.namespace,
+          ref.model,
+          fallbackTag,
+          { signal: options?.signal }
+        );
+        ref.tag = fallbackTag;
+      } catch {
+        throw err;
+      }
+    } else {
+      throw err;
+    }
   }
+
+  const { manifest, token } = manifestData;
 
   // Find metadata layers
   const paramsLayer = manifest.layers.find(
@@ -297,13 +310,82 @@ export async function resolveOllamaRegistryModel(
 
   await Promise.all(metadataTasks);
 
-  const modelHexHash = extractHexHash(modelLayer.digest);
-  const downloadUrl = `https://registry.ollama.ai/v2/${ref.namespace}/${ref.model}/blobs/${modelLayer.digest}`;
+  // Find model layer (raw GGUF weights)
+  const modelLayer = manifest.layers.find(
+    (l) => l.mediaType === "application/vnd.ollama.image.model"
+  );
 
   const displayName =
     ref.namespace === "library"
       ? `${ref.model}:${ref.tag}`
       : `${ref.namespace}/${ref.model}:${ref.tag}`;
+
+  // Detect Ollama Cloud model
+  const isCloud = Boolean(
+    configData?.remote_host ||
+    configData?.remote_model ||
+    ref.tag.endsWith("-cloud") ||
+    ref.tag === "cloud" ||
+    (!modelLayer && manifest.config?.digest)
+  );
+
+  if (isCloud) {
+    logger.info(`Resolved Ollama Cloud model: ${displayName}`);
+    const remoteHost = configData?.remote_host || "https://ollama.com";
+    let remoteModel = configData?.remote_model;
+    if (!remoteModel) {
+      const cleanTag = ref.tag.replace(/-cloud$/, "");
+      remoteModel = cleanTag && cleanTag !== "latest" && cleanTag !== "cloud" ? `${ref.model}:${cleanTag}` : ref.model;
+    }
+
+    const contextSize =
+      configData?.context_length ||
+      paramsData?.num_ctx ||
+      paramsData?.context_size ||
+      131072;
+
+    const quantization = configData?.file_type || "cloud";
+    const configHash = manifest.config?.digest ? extractHexHash(manifest.config.digest) : undefined;
+
+    const modelParams: ModelParameters = {
+      context_size: contextSize,
+      ...(paramsData || {}),
+    };
+
+    if (systemText) {
+      modelParams.system_prompt = systemText;
+    }
+
+    return {
+      name: displayName,
+      normalizedName: normalizeModelName(displayName),
+      repository: `registry.ollama.ai/${ref.namespace}/${ref.model}`,
+      quantization,
+      filename: `${ref.model}-${ref.tag}.cloud`,
+      downloadUrl: undefined,
+      expectedSha256: configHash,
+      sizeBytes: 0,
+      context: contextSize,
+      source: "ollama-cloud",
+      template: templateText,
+      system: systemText,
+      license: licenseText,
+      parameters: modelParams,
+      isCloud: true,
+      remoteHost,
+      remoteModel,
+      capabilities: configData?.capabilities || ["completion", "tools", "thinking"],
+    };
+  }
+
+  if (!modelLayer) {
+    throw new Error(
+      `No model layer (GGUF) found in Ollama registry manifest for "${ref.namespace}/${ref.model}:${ref.tag}"`
+    );
+  }
+
+  const modelHexHash = extractHexHash(modelLayer.digest);
+  const downloadUrl = `https://registry.ollama.ai/v2/${ref.namespace}/${ref.model}/blobs/${modelLayer.digest}`;
 
   const contextSize =
     paramsData?.num_ctx ||

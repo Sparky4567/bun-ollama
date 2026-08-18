@@ -47,6 +47,46 @@ export async function downloadModel(
   logger.info(`Resolving remote model: ${modelInput}`);
   const descriptor = await resolveModel(modelInput, cfg.defaultQuantization);
 
+  // If this is an Ollama Cloud model, register manifest directly
+  if (descriptor.isCloud || descriptor.source === "ollama-cloud") {
+    const manifest = createManifest({
+      name: descriptor.name,
+      digest: descriptor.expectedSha256 ? `sha256:${descriptor.expectedSha256}` : `sha256:${Math.random().toString(16).slice(2).padEnd(64, "0")}`,
+      size: descriptor.sizeBytes || 0,
+      quantization: descriptor.quantization,
+      repository: descriptor.repository,
+      filename: descriptor.filename || "(cloud)",
+      blobPath: "",
+      format: "cloud",
+      parameters: descriptor.parameters || {
+        context_size: descriptor.context || 131072,
+      },
+      template: descriptor.template,
+      system: descriptor.system,
+      license: descriptor.license,
+      source: "ollama-cloud",
+      isCloud: true,
+      remoteHost: descriptor.remoteHost || "https://ollama.com",
+      remoteModel: descriptor.remoteModel || descriptor.name,
+      capabilities: descriptor.capabilities,
+    });
+
+    await saveManifest(manifest, cfg);
+    logger.info(`Ollama Cloud model manifest saved for ${manifest.name}`);
+
+    onProgress?.({
+      model: descriptor.name,
+      totalBytes: 0,
+      downloadedBytes: 0,
+      percent: 100,
+      speedBytesPerSec: 0,
+      elapsedSeconds: 0,
+      status: "completed",
+    });
+
+    return manifest;
+  }
+
   if (!descriptor.downloadUrl) {
     throw new Error(`Could not determine download URL for model "${modelInput}"`);
   }

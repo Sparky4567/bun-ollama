@@ -94,18 +94,21 @@ bun run src/index.ts run llama3.2:1b "Why is the sky blue?"
 
 | Command | Description | Example |
 |---|---|---|
-| `run <model> [prompt]` | Interactive chat or single-shot generation | `bun run src/index.ts run llama3.2:1b` |
-| `pull <model>` | Download model from Ollama Registry or Hugging Face | `bun run src/index.ts pull ollama:deepseek-r1:8b` |
+| `run <model> [prompt]` | Interactive chat or single-shot generation | `bun run src/index.ts run gpt-oss:120b-cloud` |
+| `pull <model>` | Download/register model from Ollama Registry or Cloud | `bun run src/index.ts pull gpt-oss:120b-cloud` |
+| `signin, login [key]` | Authenticate with your Ollama.com account / API key | `bun run src/index.ts signin` |
+| `signout, logout` | Sign out from Ollama Cloud | `bun run src/index.ts signout` |
+| `auth, whoami` | Check authentication status & accessible cloud models | `bun run src/index.ts auth` |
 | `import-ollama [opts]` | Import models from local `~/.ollama` (zero-copy symlink) | `bun run src/index.ts import-ollama` |
-| `list`, `ls` | List all locally stored models | `bun run src/index.ts list` |
+| `list`, `ls` | List all locally stored / registered models | `bun run src/index.ts list` |
 | `ps` | List running model processes | `bun run src/index.ts ps` |
-| `show <model>` | Show model metadata and manifest | `bun run src/index.ts show llama3.2:1b` |
+| `show <model>` | Show model metadata and manifest | `bun run src/index.ts show gpt-oss:120b-cloud` |
 | `rm <model>` | Remove model and unreferenced blobs | `bun run src/index.ts rm llama3.2:1b` |
 | `stop <model>` | Stop active inference process | `bun run src/index.ts stop llama3.2:1b` |
 | `serve` | Start Ollama Lite HTTP API daemon | `bun run src/index.ts serve --quiet` |
 | `serve end` | Stop running Ollama Lite HTTP API daemon | `bun run src/index.ts serve end` |
 | `benchmark <model>` | Run inference benchmark & tok/s metrics | `bun run src/index.ts benchmark llama3.2:1b` |
-| `config [get/set/list]` | View or update persistent configuration | `bun run src/index.ts config set logLevel none` |
+| `config [get/set/list]` | View or update persistent configuration | `bun run src/index.ts config set apiKey <key>` |
 
 ## Model Sources & Catalog
 
@@ -120,7 +123,28 @@ bun run src/index.ts run ollama:mistral:7b
 bun run src/index.ts pull smollm:135m
 ```
 
-### 2. Import Existing Local Ollama Models (`~/.ollama`)
+### 2. Ollama Cloud Models (Managed Remote Inference & Account Sign In)
+Access massive datacenter models (e.g. `gpt-oss:120b-cloud`, `deepseek-v4-pro:preview`, `nemotron-3-ultra:cloud`) seamlessly through Ollama Lite. Cloud models require zero local disk downloads for model weights and proxy streaming inference directly to Ollama Cloud.
+
+```bash
+# Interactive Sign In (shows public key and prompts for API key)
+bun run src/index.ts signin
+
+# Or sign in with key directly:
+bun run src/index.ts signin <your-ollama-api-key>
+
+# Check authentication status and discover accessible models:
+bun run src/index.ts auth
+
+# Pull/register a cloud model
+bun run src/index.ts pull gpt-oss:120b-cloud
+
+# Run interactive REPL or single-shot generation
+bun run src/index.ts run gpt-oss:120b-cloud
+bun run src/index.ts run gpt-oss:120b-cloud "Explain the theory of relativity"
+```
+
+### 3. Import Existing Local Ollama Models (`~/.ollama`)
 If you already have models downloaded by the official Ollama daemon on your system, import them into Ollama Lite without re-downloading gigabytes of data. Ollama Lite creates zero-copy symlinks to your existing blobs:
 ```bash
 # Auto-detects ~/.ollama/models and imports all models
@@ -130,13 +154,13 @@ bun run src/index.ts import-ollama
 bun run src/index.ts import-ollama --path /var/lib/ollama/models --copy
 ```
 
-### 3. Built-in Hugging Face Aliases
+### 4. Built-in Hugging Face Aliases
 - `llama3.2:1b` / `llama3.2:3b` (Llama 3.2 Instruct)
 - `qwen2.5:0.5b` / `qwen2.5:1.5b` / `qwen2.5-coder:0.5b`
 - `smollm2:135m` / `smollm2:360m`
 - `gemma2:2b`
 
-### 4. Custom Hugging Face Repositories
+### 5. Custom Hugging Face Repositories
 You can pull and run any Hugging Face GGUF repository directly:
 ```bash
 bun run src/index.ts run bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M
@@ -154,6 +178,10 @@ bun run src/index.ts run bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M
 - `POST /api/delete` - Delete model
 - `POST /api/chat` - Chat completions (streaming NDJSON & non-streaming)
 - `POST /api/generate` - Text completions (streaming NDJSON & non-streaming)
+- `POST /api/auth/signin` - Authenticate with Ollama Cloud API key
+- `POST /api/auth/signout` - Clear Ollama Cloud authentication
+- `GET  /api/auth/status` - Check authentication status & accessible cloud models
+- `GET  /api/auth/key` - Retrieve local ed25519 SSH public key
 - `POST /api/shutdown` - Gracefully stop Ollama Lite daemon and all inference processes
 
 ### OpenAI-Compatible API

@@ -6,6 +6,8 @@ import { downloadModel, type DownloadProgress } from "./models/downloader.ts";
 import { detectOllamaDirectory, importAllLocalOllamaModels } from "./models/ollama-local.ts";
 import { ProcessManager } from "./runtime/process-manager.ts";
 import { startServer, stopRunningServer } from "./api/server.ts";
+import { streamCloudChatCli } from "./runtime/cloud-client.ts";
+import { signIn, signOut, getAuthStatus, getOrCreateKeypair } from "./runtime/auth.ts";
 import { type LogLevel, logger } from "./utils/logging.ts";
 
 function formatBytes(bytes: number): string {
@@ -42,7 +44,7 @@ function renderProgressBar(progress: DownloadProgress): void {
  */
 export async function cliPull(modelName: string, config: Config): Promise<void> {
   if (!modelName) {
-    console.error("Error: Please provide a model name (e.g. ollama-lite pull llama3.2:1b)");
+    console.error("Error: Please provide a model name (e.g. ollama-lite pull llama3.2:1b or gpt-oss:120b-cloud)");
     process.exit(1);
   }
 
@@ -63,7 +65,11 @@ export async function cliPull(modelName: string, config: Config): Promise<void> 
     });
 
     if (process.stdout.isTTY) process.stdout.write("\n");
-    console.log(`Successfully pulled ${manifest.name} (${formatBytes(manifest.size)}) [${manifest.quantization}]`);
+    if (manifest.is_cloud || manifest.source === "ollama-cloud" || manifest.format === "cloud") {
+      console.log(`Successfully pulled cloud model ${manifest.name} (remote: ${manifest.remote_model || manifest.name} at ${manifest.remote_host || "https://ollama.com"}) [cloud]`);
+    } else {
+      console.log(`Successfully pulled ${manifest.name} (${formatBytes(manifest.size)}) [${manifest.quantization}]`);
+    }
   } catch (err: any) {
     if (process.stdout.isTTY) process.stdout.write("\n");
     console.error(`\nFailed to pull model: ${err.message}`);
@@ -90,10 +96,12 @@ export async function cliList(config: Config): Promise<void> {
 
   for (const m of manifests) {
     const id = m.digest.slice(7, 19);
-    const size = formatBytes(m.size);
+    const isCloud = Boolean(m.is_cloud || m.source === "ollama-cloud" || m.format === "cloud");
+    const size = isCloud ? "cloud" : formatBytes(m.size);
+    const quant = isCloud ? "remote" : m.quantization;
     const modified = new Date(m.modified_at).toLocaleString();
     console.log(
-      `${m.name.padEnd(28)} ${id.padEnd(16)} ${size.padEnd(12)} ${m.quantization.padEnd(10)} ${modified}`
+      `${m.name.padEnd(28)} ${id.padEnd(16)} ${size.padEnd(12)} ${quant.padEnd(10)} ${modified}`
     );
   }
 }
@@ -122,8 +130,11 @@ export async function cliPs(config: Config): Promise<void> {
       for (const m of models) {
         const expiresInMs = new Date(m.expires_at).getTime() - Date.now();
         const expiresStr = expiresInMs > 0 ? `${Math.round(expiresInMs / 1000)}s` : "now";
+        const isCloud = Boolean(m.is_cloud || m.format === "cloud");
+        const portStr = isCloud ? "cloud" : String(m.port);
+        const sizeStr = isCloud ? "cloud" : formatBytes(m.size);
         console.log(
-          `${m.name.padEnd(28)} ${String(m.port).padEnd(8)} ${formatBytes(m.size).padEnd(12)} ${expiresStr}`
+          `${m.name.padEnd(28)} ${portStr.padEnd(8)} ${sizeStr.padEnd(12)} ${expiresStr}`
         );
       }
       return;
@@ -140,7 +151,7 @@ export async function cliPs(config: Config): Promise<void> {
  */
 export async function cliShow(modelName: string, config: Config): Promise<void> {
   if (!modelName) {
-    console.error("Error: Please provide a model name (e.g. ollama-lite show llama3.2:1b)");
+    console.error("Error: Please provide a model name (e.g. ollama-lite show llama3.2:1b or gpt-oss:120b-cloud)");
     process.exit(1);
   }
 
@@ -151,21 +162,33 @@ export async function cliShow(modelName: string, config: Config): Promise<void> 
     process.exit(1);
   }
 
+  const isCloud = Boolean(manifest.is_cloud || manifest.source === "ollama-cloud" || manifest.format === "cloud");
+
   console.log(`Model:         ${manifest.name}`);
+  if (isCloud) {
+    console.log(`Type:          Cloud (Remote)`);
+    console.log(`Remote Host:   ${manifest.remote_host || "https://ollama.com"}`);
+    console.log(`Remote Model:  ${manifest.remote_model || manifest.name}`);
+    if (manifest.capabilities && manifest.capabilities.length > 0) {
+      console.log(`Capabilities:  ${manifest.capabilities.join(", ")}`);
+    }
+  }
   console.log(`Digest:        ${manifest.digest}`);
   console.log(`Repository:    ${manifest.repository}`);
-  console.log(`Source:        ${manifest.source || "huggingface"}`);
+  console.log(`Source:        ${manifest.source || (isCloud ? "ollama-cloud" : "huggingface")}`);
   console.log(`Filename:      ${manifest.filename}`);
   console.log(`Quantization:  ${manifest.quantization}`);
-  console.log(`Size:          ${formatBytes(manifest.size)}`);
-  console.log(`Context Size:  ${manifest.parameters?.context_size || 2048}`);
+  console.log(`Size:          ${isCloud ? "cloud" : formatBytes(manifest.size)}`);
+  console.log(`Context Size:  ${manifest.parameters?.context_size || (isCloud ? 131072 : 2048)}`);
   if (manifest.system || manifest.parameters?.system_prompt) {
     console.log(`System Prompt: ${manifest.system || manifest.parameters?.system_prompt}`);
   }
   if (manifest.parameters?.stop) {
     console.log(`Stop Tokens:   ${JSON.stringify(manifest.parameters.stop)}`);
   }
-  console.log(`Blob Path:     ${manifest.blob_path}`);
+  if (!isCloud) {
+    console.log(`Blob Path:     ${manifest.blob_path}`);
+  }
   console.log(`Modified:      ${new Date(manifest.modified_at).toLocaleString()}`);
 }
 
@@ -381,18 +404,40 @@ export async function cliRun(
     process.exit(1);
   }
 
+  const isCloud = Boolean(manifest.is_cloud || manifest.source === "ollama-cloud" || manifest.format === "cloud" || modelProc.isCloud);
+
   // If a prompt was provided on the CLI, do single-shot execution
   if (promptArgs.length > 0) {
     const prompt = promptArgs.join(" ");
-    await streamChatCompletion(modelProc.port, [{ role: "user", content: prompt }]);
+    if (isCloud) {
+      try {
+        await streamCloudChatCli({
+          modelName,
+          messages: [{ role: "user", content: prompt }],
+          manifest,
+          config,
+        });
+        process.stdout.write("\n");
+      } catch (err: any) {
+        console.error(`\nCloud error: ${err.message}`);
+      }
+    } else {
+      await streamChatCompletion(modelProc.port, [{ role: "user", content: prompt }]);
+    }
     await cleanup();
     return;
   }
 
   // Interactive REPL Mode
-  console.log(`\nModel:        ${modelName}`);
-  console.log(`Quantization: ${manifest.quantization}`);
-  console.log(`Context:      ${manifest.parameters?.context_size || 2048}`);
+  console.log(`\nModel:        ${modelName}${isCloud ? " [Ollama Cloud]" : ""}`);
+  if (isCloud) {
+    console.log(`Remote Host:  ${manifest.remote_host || "https://ollama.com"}`);
+    console.log(`Remote Model: ${manifest.remote_model || modelName}`);
+    console.log(`Context:      ${manifest.parameters?.context_size || 131072}`);
+  } else {
+    console.log(`Quantization: ${manifest.quantization}`);
+    console.log(`Context:      ${manifest.parameters?.context_size || 2048}`);
+  }
   console.log(`Type "/exit" or "/bye" to quit.\n`);
 
   const rl = readline.createInterface({
@@ -432,10 +477,20 @@ export async function cliRun(
       conversationHistory.push({ role: "user", content: trimmed });
 
       try {
-        const assistantResponse = await streamChatCompletion(
-          modelProc.port,
-          conversationHistory
-        );
+        let assistantResponse = "";
+        if (isCloud) {
+          assistantResponse = await streamCloudChatCli({
+            modelName,
+            messages: conversationHistory,
+            manifest,
+            config,
+          });
+        } else {
+          assistantResponse = await streamChatCompletion(
+            modelProc.port,
+            conversationHistory
+          );
+        }
         conversationHistory.push({ role: "assistant", content: assistantResponse });
         console.log("\n");
       } catch (err: any) {
@@ -684,6 +739,8 @@ export async function cliConfig(args: string[], config: Config): Promise<void> {
     console.log(`  defaultQuantization: ${config.defaultQuantization}`);
     console.log(`  idleTimeout:         ${config.idleTimeout}ms`);
     console.log(`  llamaServer:         ${config.llamaServer}`);
+    console.log(`  apiKey:              ${config.apiKey ? "********" : "(not set)"}`);
+    console.log(`  ollamaCloudHost:     ${config.ollamaCloudHost || "https://ollama.com"}`);
     return;
   }
 
@@ -693,7 +750,10 @@ export async function cliConfig(args: string[], config: Config): Promise<void> {
       console.error("Usage: ollama-lite config get <key>");
       process.exit(1);
     }
-    const normalizedKey = key === "log-level" ? "logLevel" : key;
+    let normalizedKey = key === "log-level" ? "logLevel" : key;
+    if (normalizedKey === "api-key") normalizedKey = "apiKey";
+    if (normalizedKey === "cloud-host" || normalizedKey === "ollama-cloud-host") normalizedKey = "ollamaCloudHost";
+
     if (normalizedKey in config) {
       console.log((config as any)[normalizedKey]);
     } else {
@@ -709,11 +769,15 @@ export async function cliConfig(args: string[], config: Config): Promise<void> {
     if (!key || value === undefined) {
       console.error("Usage: ollama-lite config set <key> <value>");
       console.error("Example: ollama-lite config set logLevel warn");
+      console.error("Example: ollama-lite config set apiKey <your-api-key>");
       console.error("Example: ollama-lite config set logLevel none");
       process.exit(1);
     }
 
-    const normalizedKey = key === "log-level" ? "logLevel" : key;
+    let normalizedKey = key === "log-level" ? "logLevel" : key;
+    if (normalizedKey === "api-key") normalizedKey = "apiKey";
+    if (normalizedKey === "cloud-host" || normalizedKey === "ollama-cloud-host") normalizedKey = "ollamaCloudHost";
+
     if (normalizedKey === "logLevel") {
       const validLevels: LogLevel[] = ["debug", "info", "warn", "error", "none"];
       if (!validLevels.includes(value as LogLevel)) {
@@ -730,7 +794,7 @@ export async function cliConfig(args: string[], config: Config): Promise<void> {
     }
 
     saveConfig({ [normalizedKey]: value });
-    console.log(`Updated config: ${normalizedKey} = ${value}`);
+    console.log(`Updated config: ${normalizedKey} = ${normalizedKey === "apiKey" ? "********" : value}`);
     return;
   }
 
@@ -739,11 +803,106 @@ export async function cliConfig(args: string[], config: Config): Promise<void> {
 }
 
 /**
+ * CLI Sign In Command
+ */
+export async function cliSignin(args: string[], config: Config): Promise<void> {
+  let apiKey = args[0];
+
+  if (!apiKey) {
+    const keypair = getOrCreateKeypair();
+
+    console.log(`
+===================================================================
+                  Ollama Cloud Sign In / Authentication            
+===================================================================
+
+To authenticate and access Ollama Cloud models (e.g. gpt-oss:120b-cloud):
+
+1. Log in to your account at: https://ollama.com
+2. Obtain your API Key from:  https://ollama.com/settings/keys
+
+Your public key (add to https://ollama.com/settings/keys if publishing):
+${keypair.publicKey}
+===================================================================
+`);
+
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    apiKey = await new Promise<string>((resolve) => {
+      rl.question("Enter your Ollama API key: ", (answer) => {
+        rl.close();
+        resolve(answer.trim());
+      });
+    });
+  }
+
+  if (!apiKey) {
+    console.error("Error: No API key provided. Sign in aborted.");
+    process.exit(1);
+  }
+
+  console.log("Verifying credentials with Ollama Cloud (ollama.com)...");
+  const result = await signIn(apiKey, config);
+
+  if (!result.success) {
+    console.error(`\n✗ Sign in failed: ${result.message}`);
+    process.exit(1);
+  }
+
+  console.log(`\n✓ ${result.message}`);
+  if (result.models && result.models.length > 0) {
+    console.log(`✓ Discovered and registered ${result.models.length} cloud models:`);
+    for (const m of result.models.slice(0, 8)) {
+      console.log(`    - ${m}`);
+    }
+    if (result.models.length > 8) {
+      console.log(`    ... and ${result.models.length - 8} more`);
+    }
+  }
+}
+
+/**
+ * CLI Sign Out Command
+ */
+export async function cliSignout(config: Config): Promise<void> {
+  const result = await signOut(config);
+  console.log(result.message);
+}
+
+/**
+ * CLI Auth Status / WhoAmI Command
+ */
+export async function cliAuthStatus(config: Config): Promise<void> {
+  console.log("Checking Ollama Cloud authentication status...\n");
+  const status = await getAuthStatus(config);
+
+  console.log(`Ollama Cloud Host: ${status.remoteHost}`);
+  console.log(`API Key Status:    ${status.apiKeyConfigured ? "Configured (saved in config)" : "Not configured"}`);
+  console.log(`Authentication:    ${status.authenticated ? "✓ Authenticated" : "✗ Not authenticated / Invalid key"}`);
+
+  if (status.publicKey) {
+    console.log(`Public Key:        ${status.publicKey}`);
+  }
+
+  if (status.models && status.models.length > 0) {
+    console.log(`\nAccessible Cloud Models (${status.models.length}):`);
+    for (const m of status.models) {
+      console.log(`  - ${m}`);
+    }
+  } else if (!status.authenticated) {
+    console.log("\nRun `ollama-lite signin` or `ollama-lite config set apiKey <key>` to log in.");
+  }
+}
+
+/**
  * Prints help text
  */
 export function printHelp(): void {
   console.log(`
-Ollama Lite - Lightweight Bun.js & llama.cpp Local LLM Manager
+Ollama Lite - Lightweight Bun.js & llama.cpp Local & Cloud LLM Manager
 
 Usage:
   ollama-lite [flags] <command> [arguments]
@@ -758,31 +917,35 @@ Flags:
 
 Commands:
   run <model> [prompt]    Run a model (starts interactive chat if prompt is omitted)
-  pull <model>            Download a model from Ollama Registry or Hugging Face
+  pull <model>            Download/register model from Ollama Registry, Cloud, or Hugging Face
+  signin, login [key]     Sign in with your Ollama.com account / API key
+  signout, logout         Sign out from Ollama Cloud
+  auth, whoami            View current authentication status and accessible cloud models
   import-ollama [opts]    Import existing models from local ~/.ollama store (--path, --copy)
-  list, ls                List all downloaded models
+  list, ls                List all downloaded/registered models
   ps                      List all currently running model processes
   show <model>            Show detailed metadata for a model
   rm <model>              Remove a model and unused storage blobs
   stop <model>            Stop an active inference server
   serve [end|stop]        Start or stop the HTTP API daemon (default port: 11434)
   benchmark <model>       Run inference benchmark passes and compute tok/s metrics
-  config [get|set|list]   View or update persistent configuration (e.g. config set logLevel none)
+  config [get|set|list]   View or update persistent configuration (e.g. config set apiKey <key>)
   help                    Show this help message
   version                 Show Ollama Lite version
 
 Examples:
+  ollama-lite signin
+  ollama-lite signin <your-api-key>
+  ollama-lite auth
+  ollama-lite run gpt-oss:120b-cloud
+  ollama-lite run gpt-oss:120b-cloud "Explain quantum computing in one sentence"
+  ollama-lite pull gpt-oss:120b-cloud
   ollama-lite run llama3.2:1b
   ollama-lite run ollama:deepseek-r1:8b
   ollama-lite pull smollm:135m
   ollama-lite import-ollama
   ollama-lite import-ollama --path ~/.ollama/models --copy
-  ollama-lite run llama3.2:1b "Explain quantum computing in one sentence" --quiet
-  ollama-lite pull qwen2.5:0.5b --silent
   ollama-lite serve
   ollama-lite serve end
-  ollama-lite serve --quiet
-  ollama-lite serve --log-level none
-  ollama-lite config set logLevel warn
 `);
 }

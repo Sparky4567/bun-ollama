@@ -21,6 +21,8 @@ export interface Config {
   idleTimeout: number; // in milliseconds
   llamaServer: string;
   logLevel: LogLevel;
+  apiKey?: string;
+  ollamaCloudHost?: string;
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -33,6 +35,7 @@ const DEFAULT_CONFIG: Config = {
   idleTimeout: 300_000, // 5 minutes
   llamaServer: "llama-server",
   logLevel: "info",
+  ollamaCloudHost: "https://ollama.com",
 };
 
 /**
@@ -113,6 +116,8 @@ export function loadConfig(configOverrides?: Partial<Config>): Config {
   const envContext = process.env.OLLAMA_LITE_CONTEXT ? parseInt(process.env.OLLAMA_LITE_CONTEXT, 10) : undefined;
   const envIdleTimeout = process.env.OLLAMA_LITE_IDLE_TIMEOUT ? parseInt(process.env.OLLAMA_LITE_IDLE_TIMEOUT, 10) : undefined;
   const envLogLevel = process.env.OLLAMA_LITE_LOG_LEVEL as LogLevel | undefined;
+  const envApiKey = process.env.OLLAMA_API_KEY || process.env.OLLAMA_KEY || process.env.OLLAMA_LITE_API_KEY;
+  const envCloudHost = process.env.OLLAMA_CLOUD_HOST || process.env.OLLAMA_LITE_CLOUD_HOST;
 
   const rawConfig: Config = {
     host: configOverrides?.host ?? envHost ?? fileConfig.host ?? DEFAULT_CONFIG.host,
@@ -124,6 +129,8 @@ export function loadConfig(configOverrides?: Partial<Config>): Config {
     idleTimeout: configOverrides?.idleTimeout ?? (envIdleTimeout && !isNaN(envIdleTimeout) ? envIdleTimeout : undefined) ?? fileConfig.idleTimeout ?? DEFAULT_CONFIG.idleTimeout,
     llamaServer: configOverrides?.llamaServer ?? envLlamaServer ?? fileConfig.llamaServer ?? DEFAULT_CONFIG.llamaServer,
     logLevel: configOverrides?.logLevel ?? envLogLevel ?? fileConfig.logLevel ?? DEFAULT_CONFIG.logLevel,
+    apiKey: configOverrides?.apiKey ?? envApiKey ?? fileConfig.apiKey,
+    ollamaCloudHost: configOverrides?.ollamaCloudHost ?? envCloudHost ?? fileConfig.ollamaCloudHost ?? DEFAULT_CONFIG.ollamaCloudHost,
   };
 
   // Expand paths

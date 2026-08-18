@@ -86,6 +86,32 @@ export class ApiRouter {
       else if (pathname === "/api/tags" && method === "GET") {
         res = await handleListTags(this.config);
       }
+      // Auth endpoints
+      else if ((pathname === "/api/auth/signin" || pathname === "/api/auth/login") && method === "POST") {
+        try {
+          const body: any = await req.json();
+          const { signIn } = await import("../runtime/auth.ts");
+          const result = await signIn(body.apiKey || body.key || "", this.config);
+          res = Response.json(result, { status: result.success ? 200 : 400 });
+        } catch {
+          res = Response.json({ error: "Invalid request body" }, { status: 400 });
+        }
+      }
+      else if ((pathname === "/api/auth/signout" || pathname === "/api/auth/logout") && (method === "POST" || method === "GET")) {
+        const { signOut } = await import("../runtime/auth.ts");
+        const result = await signOut(this.config);
+        res = Response.json(result);
+      }
+      else if ((pathname === "/api/auth/status" || pathname === "/api/auth/whoami") && method === "GET") {
+        const { getAuthStatus } = await import("../runtime/auth.ts");
+        const result = await getAuthStatus(this.config);
+        res = Response.json(result);
+      }
+      else if ((pathname === "/api/auth/key" || pathname === "/api/auth/public-key") && method === "GET") {
+        const { getPublicKey, getOrCreateKeypair } = await import("../runtime/auth.ts");
+        const key = getPublicKey() || getOrCreateKeypair().publicKey;
+        res = Response.json({ public_key: key });
+      }
       // Ollama Running Models (ps)
       else if (pathname === "/api/ps" && method === "GET") {
         res = await handleListRunning(this.processManager, this.config);

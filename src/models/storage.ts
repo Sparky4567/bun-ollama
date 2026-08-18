@@ -46,8 +46,9 @@ export async function getManifest(
     const content = await Bun.file(manifestPath).text();
     const manifest: ModelManifest = JSON.parse(content);
 
-    // Verify blob exists
-    if (!fs.existsSync(manifest.blob_path)) {
+    // Verify blob exists for local GGUF models (cloud models do not have local blobs)
+    const isCloud = Boolean(manifest.is_cloud || manifest.source === "ollama-cloud" || manifest.format === "cloud");
+    if (!isCloud && !fs.existsSync(manifest.blob_path)) {
       logger.warn(`Manifest exists for ${modelName} but blob file ${manifest.blob_path} is missing.`);
       return null;
     }
@@ -105,7 +106,8 @@ export async function listManifests(config?: Config): Promise<ModelManifest[]> {
     try {
       const content = await Bun.file(fullPath).text();
       const manifest: ModelManifest = JSON.parse(content);
-      if (fs.existsSync(manifest.blob_path)) {
+      const isCloud = Boolean(manifest.is_cloud || manifest.source === "ollama-cloud" || manifest.format === "cloud");
+      if (isCloud || (manifest.blob_path && fs.existsSync(manifest.blob_path))) {
         manifests.push(manifest);
       }
     } catch {
@@ -131,10 +133,12 @@ export async function deleteModel(
   }
 
   let blobPathToDelete: string | null = null;
+  let isCloud = false;
   try {
     const content = await Bun.file(manifestPath).text();
     const manifest: ModelManifest = JSON.parse(content);
     blobPathToDelete = manifest.blob_path;
+    isCloud = Boolean(manifest.is_cloud || manifest.source === "ollama-cloud" || manifest.format === "cloud");
   } catch {
     // proceed to remove manifest
   }
@@ -144,7 +148,7 @@ export async function deleteModel(
   logger.info(`Removed manifest for ${modelName}`);
 
   // Check if blob is still referenced by any other manifest
-  if (blobPathToDelete && fs.existsSync(blobPathToDelete)) {
+  if (!isCloud && blobPathToDelete && fs.existsSync(blobPathToDelete)) {
     const allManifests = await listManifests(cfg);
     const isReferenced = allManifests.some((m) => m.blob_path === blobPathToDelete);
 
