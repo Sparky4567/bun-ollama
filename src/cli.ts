@@ -6,6 +6,7 @@ import { downloadModel, type DownloadProgress } from "./models/downloader.ts";
 import { detectOllamaDirectory, importAllLocalOllamaModels } from "./models/ollama-local.ts";
 import { ProcessManager } from "./runtime/process-manager.ts";
 import { startServer, stopRunningServer } from "./api/server.ts";
+import { normalizeChatMessages } from "./api/chat.ts";
 import { streamCloudChatCli } from "./runtime/cloud-client.ts";
 import { signIn, signOut, getAuthStatus, getOrCreateKeypair } from "./runtime/auth.ts";
 import { type LogLevel, logger } from "./utils/logging.ts";
@@ -516,7 +517,7 @@ async function streamChatCompletion(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      messages,
+      messages: normalizeChatMessages(messages),
       stream: true,
     }),
   });

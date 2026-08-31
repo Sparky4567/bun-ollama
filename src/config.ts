@@ -30,7 +30,7 @@ const DEFAULT_CONFIG: Config = {
   port: 11434,
   modelsDir: "~/.ollama-lite/models",
   runtimeDir: "~/.ollama-lite/runtime",
-  defaultContext: 2048,
+  defaultContext: 4096,
   defaultQuantization: "Q4_K_M",
   idleTimeout: 300_000, // 5 minutes
   llamaServer: "llama-server",

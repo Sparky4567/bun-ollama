@@ -27,6 +27,24 @@ export interface OllamaChatRequest {
 }
 
 /**
+ * Combines adjacent messages with the same role for templates that require
+ * strict user/assistant alternation.
+ */
+export function normalizeChatMessages<T extends { role: string; content: string }>(
+  messages: T[]
+): T[] {
+  return messages.reduce<T[]>((normalized, message) => {
+    const previous = normalized[normalized.length - 1];
+    if (previous?.role === message.role) {
+      previous.content = `${previous.content}\n${message.content}`;
+    } else {
+      normalized.push({ ...message });
+    }
+    return normalized;
+  }, []);
+}
+
+/**
  * Maps Ollama options to OpenAI / llama-server parameters.
  */
 function mapChatOptions(options?: OllamaChatRequest["options"]) {
@@ -106,7 +124,7 @@ export async function handleOllamaChat(
 
   const llamaPayload = {
     model: modelName,
-    messages: body.messages,
+    messages: normalizeChatMessages(body.messages),
     stream,
     ...mapChatOptions(body.options),
   };
@@ -160,6 +178,7 @@ export async function handleOllamaChat(
 
     let evalCount = 0;
     let buffer = "";
+    let doneSent = false;
 
     const streamBody = new ReadableStream({
       async start(controller) {
@@ -174,9 +193,11 @@ export async function handleOllamaChat(
 
             for (const line of lines) {
               const trimmed = line.trim();
-              if (!trimmed || !trimmed.startsWith("data:")) continue;
+              if (!trimmed) continue;
 
-              const dataStr = trimmed.replace(/^data:\s*/, "");
+              // llama-server /v1/chat/completions streams SSE (with "data:" prefix).
+              // Accept plain NDJSON too for robustness.
+              const dataStr = trimmed.startsWith("data:") ? trimmed.replace(/^data:\s*/, "") : trimmed;
               if (dataStr === "[DONE]") {
                 continue;
               }
@@ -201,6 +222,7 @@ export async function handleOllamaChat(
                 }
 
                 if (finishReason) {
+                  doneSent = true;
                   const totalDurationNs = (Date.now() - startTime) * 1_000_000;
                   const finalChunk = {
                     model: modelName,
@@ -226,30 +248,43 @@ export async function handleOllamaChat(
             }
           }
 
-          // Ensure final done packet was sent
-          const totalDurationNs = (Date.now() - startTime) * 1_000_000;
-          const finalFallback = {
-            model: modelName,
-            created_at: new Date().toISOString(),
-            message: {
-              role: "assistant",
-              content: "",
-            },
-            done: true,
-            done_reason: "stop",
-            total_duration: totalDurationNs,
-            load_duration: 0,
-            prompt_eval_count: 0,
-            prompt_eval_duration: 0,
-            eval_count: evalCount,
-            eval_duration: totalDurationNs,
-          };
-          controller.enqueue(encoder.encode(JSON.stringify(finalFallback) + "\n"));
+          if (!doneSent) {
+            const totalDurationNs = (Date.now() - startTime) * 1_000_000;
+            const finalFallback = {
+              model: modelName,
+              created_at: new Date().toISOString(),
+              message: {
+                role: "assistant",
+                content: "",
+              },
+              done: true,
+              done_reason: "stop",
+              total_duration: totalDurationNs,
+              load_duration: 0,
+              prompt_eval_count: 0,
+              prompt_eval_duration: 0,
+              eval_count: evalCount,
+              eval_duration: totalDurationNs,
+            };
+            controller.enqueue(encoder.encode(JSON.stringify(finalFallback) + "\n"));
+          }
 
-          controller.close();
+          try {
+            controller.close();
+          } catch {
+            // Client may have already cancelled the stream — safe to ignore.
+          }
         } catch (err: any) {
-          logger.error(`Streaming error during chat: ${err.message}`);
-          controller.error(err);
+          // Ignore "Controller is already closed" which happens when the client
+          // cancels the stream after receiving the done:true packet.
+          if (!String(err?.message).includes("Controller is already closed")) {
+            logger.error(`Streaming error during chat: ${err.message}`);
+          }
+          try {
+            controller.error(err);
+          } catch {
+            // Controller may already be closed/errored — safe to ignore.
+          }
         }
       },
     });
@@ -312,10 +347,15 @@ export async function handleOpenAIChat(
     });
   }
 
+  const upstreamBody = {
+    ...body,
+    messages: Array.isArray(body.messages) ? normalizeChatMessages(body.messages) : body.messages,
+  };
+
   const upstreamRes = await fetch(`http://127.0.0.1:${modelProc.port}/v1/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify(upstreamBody),
   });
 
   return new Response(upstreamRes.body, {

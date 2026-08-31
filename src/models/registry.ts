@@ -35,7 +35,7 @@ export const MODEL_CATALOG: Record<string, ModelAlias> = {
   "llama3.2:1b": {
     repo: "bartowski/Llama-3.2-1B-Instruct-GGUF",
     defaultQuant: "Q4_K_M",
-    context: 2048,
+    context: 131072,
     files: {
       "Q4_K_M": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
       "Q8_0": "Llama-3.2-1B-Instruct-Q8_0.gguf",
@@ -46,7 +46,7 @@ export const MODEL_CATALOG: Record<string, ModelAlias> = {
   "llama3.2": {
     repo: "bartowski/Llama-3.2-1B-Instruct-GGUF",
     defaultQuant: "Q4_K_M",
-    context: 2048,
+    context: 131072,
     files: {
       "Q4_K_M": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
       "Q8_0": "Llama-3.2-1B-Instruct-Q8_0.gguf",
@@ -56,7 +56,7 @@ export const MODEL_CATALOG: Record<string, ModelAlias> = {
   "llama3.2:latest": {
     repo: "bartowski/Llama-3.2-1B-Instruct-GGUF",
     defaultQuant: "Q4_K_M",
-    context: 2048,
+    context: 131072,
     files: {
       "Q4_K_M": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
     },
@@ -64,7 +64,7 @@ export const MODEL_CATALOG: Record<string, ModelAlias> = {
   "llama3.2:3b": {
     repo: "bartowski/Llama-3.2-3B-Instruct-GGUF",
     defaultQuant: "Q4_K_M",
-    context: 2048,
+    context: 131072,
     files: {
       "Q4_K_M": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
       "Q8_0": "Llama-3.2-3B-Instruct-Q8_0.gguf",
@@ -74,7 +74,7 @@ export const MODEL_CATALOG: Record<string, ModelAlias> = {
   "qwen2.5:0.5b": {
     repo: "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
     defaultQuant: "Q4_K_M",
-    context: 2048,
+    context: 32768,
     files: {
       "Q4_K_M": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
       "Q8_0": "qwen2.5-0.5b-instruct-q8_0.gguf",
@@ -83,7 +83,7 @@ export const MODEL_CATALOG: Record<string, ModelAlias> = {
   "qwen3:0.6b": {
     repo: "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
     defaultQuant: "Q4_K_M",
-    context: 2048,
+    context: 32768,
     files: {
       "Q4_K_M": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
       "Q8_0": "qwen2.5-0.5b-instruct-q8_0.gguf",
@@ -92,7 +92,7 @@ export const MODEL_CATALOG: Record<string, ModelAlias> = {
   "qwen2.5:1.5b": {
     repo: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
     defaultQuant: "Q4_K_M",
-    context: 2048,
+    context: 32768,
     files: {
       "Q4_K_M": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
       "Q8_0": "qwen2.5-1.5b-instruct-q8_0.gguf",
@@ -101,7 +101,7 @@ export const MODEL_CATALOG: Record<string, ModelAlias> = {
   "qwen2.5-coder:0.5b": {
     repo: "Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF",
     defaultQuant: "Q4_K_M",
-    context: 2048,
+    context: 32768,
     files: {
       "Q4_K_M": "qwen2.5-coder-0.5b-instruct-q4_k_m.gguf",
       "Q8_0": "qwen2.5-coder-0.5b-instruct-q8_0.gguf",
@@ -110,7 +110,7 @@ export const MODEL_CATALOG: Record<string, ModelAlias> = {
   "smollm2:135m": {
     repo: "unsloth/SmolLM2-135M-Instruct-GGUF",
     defaultQuant: "Q4_K_M",
-    context: 2048,
+    context: 8192,
     files: {
       "Q4_K_M": "SmolLM2-135M-Instruct-Q4_K_M.gguf",
       "Q8_0": "SmolLM2-135M-Instruct-Q8_0.gguf",
@@ -119,7 +119,7 @@ export const MODEL_CATALOG: Record<string, ModelAlias> = {
   "smollm2:360m": {
     repo: "unsloth/SmolLM2-360M-Instruct-GGUF",
     defaultQuant: "Q4_K_M",
-    context: 2048,
+    context: 8192,
     files: {
       "Q4_K_M": "SmolLM2-360M-Instruct-Q4_K_M.gguf",
       "Q8_0": "SmolLM2-360M-Instruct-Q8_0.gguf",
@@ -128,7 +128,7 @@ export const MODEL_CATALOG: Record<string, ModelAlias> = {
   "smollm:135m": {
     repo: "unsloth/SmolLM2-135M-Instruct-GGUF",
     defaultQuant: "Q4_K_M",
-    context: 2048,
+    context: 8192,
     files: {
       "Q4_K_M": "SmolLM2-135M-Instruct-Q4_K_M.gguf",
     },
@@ -136,7 +136,7 @@ export const MODEL_CATALOG: Record<string, ModelAlias> = {
   "gemma2:2b": {
     repo: "bartowski/gemma-2-2b-it-GGUF",
     defaultQuant: "Q4_K_M",
-    context: 2048,
+    context: 8192,
     files: {
       "Q4_K_M": "gemma-2-2b-it-Q4_K_M.gguf",
       "Q8_0": "gemma-2-2b-it-Q8_0.gguf",
@@ -145,7 +145,7 @@ export const MODEL_CATALOG: Record<string, ModelAlias> = {
   "gemma3:270m": {
     repo: "bartowski/gemma-2-2b-it-GGUF",
     defaultQuant: "Q4_K_M",
-    context: 2048,
+    context: 8192,
     files: {
       "Q4_K_M": "gemma-2-2b-it-Q4_K_M.gguf",
     },

@@ -147,6 +147,7 @@ export async function handleOllamaGenerate(
 
     let evalCount = 0;
     let buffer = "";
+    let doneSent = false;
 
     const streamBody = new ReadableStream({
       async start(controller) {
@@ -161,9 +162,11 @@ export async function handleOllamaGenerate(
 
             for (const line of lines) {
               const trimmed = line.trim();
-              if (!trimmed || !trimmed.startsWith("data:")) continue;
+              if (!trimmed) continue;
 
-              const dataStr = trimmed.replace(/^data:\s*/, "");
+              // llama-server /completion streams plain NDJSON (no "data:" prefix).
+              // Strip an optional SSE "data: " prefix if present (for forward compatibility).
+              const dataStr = trimmed.startsWith("data:") ? trimmed.replace(/^data:\s*/, "") : trimmed;
               if (dataStr === "[DONE]") {
                 continue;
               }
@@ -185,6 +188,7 @@ export async function handleOllamaGenerate(
                 }
 
                 if (isStop) {
+                  doneSent = true;
                   const totalDurationNs = (Date.now() - startTime) * 1_000_000;
                   const finalChunk = {
                     model: modelName,
@@ -208,28 +212,44 @@ export async function handleOllamaGenerate(
             }
           }
 
-          // Ensure final done packet was sent
-          const totalDurationNs = (Date.now() - startTime) * 1_000_000;
-          const finalFallback = {
-            model: modelName,
-            created_at: new Date().toISOString(),
-            response: "",
-            done: true,
-            done_reason: "stop",
-            context: [],
-            total_duration: totalDurationNs,
-            load_duration: 0,
-            prompt_eval_count: 0,
-            prompt_eval_duration: 0,
-            eval_count: evalCount,
-            eval_duration: totalDurationNs,
-          };
-          controller.enqueue(encoder.encode(JSON.stringify(finalFallback) + "\n"));
+          // Send fallback done packet only when the upstream ended without a stop chunk.
+          // When doneSent=true the client already received done:true and may have cancelled
+          // the stream, closing the controller — enqueueing again would throw an error.
+          if (!doneSent) {
+            const totalDurationNs = (Date.now() - startTime) * 1_000_000;
+            const finalFallback = {
+              model: modelName,
+              created_at: new Date().toISOString(),
+              response: "",
+              done: true,
+              done_reason: "stop",
+              context: [],
+              total_duration: totalDurationNs,
+              load_duration: 0,
+              prompt_eval_count: 0,
+              prompt_eval_duration: 0,
+              eval_count: evalCount,
+              eval_duration: totalDurationNs,
+            };
+            controller.enqueue(encoder.encode(JSON.stringify(finalFallback) + "\n"));
+          }
 
-          controller.close();
+          try {
+            controller.close();
+          } catch {
+            // Client may have already cancelled the stream — safe to ignore.
+          }
         } catch (err: any) {
-          logger.error(`Streaming error during generate: ${err.message}`);
-          controller.error(err);
+          // Ignore "Controller is already closed" which happens when the client
+          // cancels the stream after receiving the done:true packet.
+          if (!String(err?.message).includes("Controller is already closed")) {
+            logger.error(`Streaming error during generate: ${err.message}`);
+          }
+          try {
+            controller.error(err);
+          } catch {
+            // Controller may already be closed/errored — safe to ignore.
+          }
         }
       },
     });
