@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import type { Config } from "../config.ts";
-import { saveConfig } from "../config.ts";
+import { saveConfig, sanitizeApiKey } from "../config.ts";
 import { expandPath, getDefaultBaseDir } from "../utils/paths.ts";
 import { saveManifest, listManifests } from "../models/storage.ts";
 import { createManifest } from "../models/manifest.ts";
@@ -117,13 +117,17 @@ export async function verifyOllamaCloudAuth(
   remoteHost = "https://ollama.com",
   signal?: AbortSignal
 ): Promise<{ success: boolean; error?: string; models?: string[] }> {
+  const cleanKey = sanitizeApiKey(apiKey);
+  if (!cleanKey) {
+    return { success: false, error: "No API key provided." };
+  }
   const cleanHost = remoteHost.replace(/\/+$/, "");
   const targetUrl = `${cleanHost}/v1/models`;
 
   try {
     const res = await fetch(targetUrl, {
       headers: {
-        "Authorization": `Bearer ${apiKey}`,
+        "Authorization": `Bearer ${cleanKey}`,
         "User-Agent": "bun-ollama-lite/1.0",
       },
       signal,
@@ -216,9 +220,16 @@ export async function signIn(
   apiKey: string,
   config: Config
 ): Promise<{ success: boolean; message: string; models?: string[] }> {
-  const cleanKey = apiKey.trim();
+  const cleanKey = sanitizeApiKey(apiKey);
   if (!cleanKey) {
     return { success: false, message: "API key cannot be empty." };
+  }
+  if (cleanKey.startsWith("ssh-ed25519 ")) {
+    return {
+      success: false,
+      message:
+        "That looks like an SSH public key (ssh-ed25519 ...), not an Ollama API key. Paste the API key from https://ollama.com/settings/keys instead.",
+    };
   }
 
   const remoteHost = config.ollamaCloudHost || "https://ollama.com";
@@ -251,7 +262,9 @@ export async function signIn(
 export async function signOut(
   config: Config
 ): Promise<{ success: boolean; message: string }> {
-  saveConfig({ apiKey: "" });
+  // saveConfig deletes the key when given an empty value.
+  saveConfig({ apiKey: "" as any });
+  delete config.apiKey;
   return {
     success: true,
     message: "Successfully signed out from Ollama Cloud.",
@@ -269,7 +282,12 @@ export async function getAuthStatus(config: Config): Promise<{
   models?: string[];
   error?: string;
 }> {
-  const apiKey = config.apiKey || process.env.OLLAMA_API_KEY || process.env.OLLAMA_KEY;
+  const apiKey = sanitizeApiKey(
+    config.apiKey ||
+      process.env.OLLAMA_API_KEY ||
+      process.env.OLLAMA_KEY ||
+      process.env.OLLAMA_LITE_API_KEY
+  );
   const remoteHost = config.ollamaCloudHost || "https://ollama.com";
   const publicKey = getPublicKey();
 

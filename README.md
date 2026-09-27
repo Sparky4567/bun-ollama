@@ -411,6 +411,31 @@ Configuration is loaded from `~/.ollama-lite/config.json` with environment varia
 | `defaultContext`| `OLLAMA_LITE_CONTEXT` | `2048` | Context window size |
 | `idleTimeout` | `OLLAMA_LITE_IDLE_TIMEOUT` | `300000` (5m) | Idle duration before unloading |
 | `logLevel` | `OLLAMA_LITE_LOG_LEVEL` | `info` | Logging verbosity (`debug`/`info`/`warn`/`error`/`none`) |
+| `apiKey` | `OLLAMA_API_KEY` (`OLLAMA_KEY`, `OLLAMA_LITE_API_KEY` also accepted) | _(unset)_ | Ollama Cloud API key from `https://ollama.com/settings/keys`. Never commit this value. |
+| `ollamaCloudHost` | `OLLAMA_CLOUD_HOST` (`OLLAMA_LITE_CLOUD_HOST`) | `https://ollama.com` | Ollama Cloud endpoint (override for testing/mocks) |
+
+### Ollama Cloud Authentication
+
+Prefer verified sign-in over raw config writes:
+
+```bash
+bun run src/index.ts signin <your-api-key>  # verifies via GET /v1/models, then saves
+bun run src/index.ts auth                   # verify status + list accessible cloud models
+```
+
+Notes:
+
+- `config set apiKey <key>` saves without verifying. Keys are trimmed, surrounding quotes and an optional `Bearer ` prefix are stripped. An `ssh-ed25519 ...` public key is rejected — paste the API key from `https://ollama.com/settings/keys`, not your SSH public key.
+- Precedence: `Authorization` request header > `OLLAMA_API_KEY` / `OLLAMA_KEY` / `OLLAMA_LITE_API_KEY` env > `~/.ollama-lite/config.json`.
+- The `serve` daemon refreshes `apiKey`/`ollamaCloudHost` from disk + env on every request, but restart after key rotation (`serve end` + `serve`) for a clean state.
+- Never commit `~/.ollama-lite/config.json`, `.env` files, or `id_ed25519*` keys. Test fixtures in this repo use dummy values (`test-cloud-api-key`, `valid-secret-key`) only.
+
+#### Troubleshooting `401 Unauthorized`
+
+The proxy distinguishes two cases (both keep the `Ollama Cloud authentication failed (401 Unauthorized)` prefix):
+
+- `No API key was sent` — nothing resolved from header/env/file. Set `OLLAMA_API_KEY` or run `signin` / `config set apiKey`.
+- `rejected the configured API key (invalid, expired, or revoked)` — a key was sent but Ollama Cloud refused it. Run `auth` to verify, then `signin <new-key>` to replace it.
 
 ### Managing Logging Verbosity
 

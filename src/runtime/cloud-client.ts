@@ -1,4 +1,7 @@
+import fs from "node:fs";
 import type { Config } from "../config.ts";
+import { sanitizeApiKey } from "../config.ts";
+import { getDefaultConfigPath } from "../utils/paths.ts";
 import type { ModelManifest } from "../models/manifest.ts";
 import type { OllamaChatRequest } from "../api/chat.ts";
 import type { OllamaGenerateRequest } from "../api/generate.ts";
@@ -12,21 +15,54 @@ export function getEffectiveApiKey(
   requestAuthHeader?: string | null
 ): string | undefined {
   if (requestAuthHeader) {
-    const cleaned = requestAuthHeader.trim();
-    if (cleaned.toLowerCase().startsWith("bearer ")) {
-      return cleaned.slice(7).trim();
-    }
-    if (cleaned) {
-      return cleaned;
-    }
+    const cleaned = sanitizeApiKey(requestAuthHeader);
+    if (cleaned) return cleaned;
   }
 
+  const fromConfig = sanitizeApiKey(config?.apiKey);
+  if (fromConfig) return fromConfig;
+
+  const fromEnv = sanitizeApiKey(
+    process.env.OLLAMA_API_KEY || process.env.OLLAMA_KEY || process.env.OLLAMA_LITE_API_KEY
+  );
+  if (fromEnv) return fromEnv;
+
+  // Fallback: re-read the persisted config file. Long-lived `serve` daemons
+  // capture Config once at startup, so a later `config set apiKey` would
+  // otherwise stay invisible until restart.
+  try {
+    const configPath = getDefaultConfigPath();
+    if (fs.existsSync(configPath)) {
+      const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+      const fileKey = sanitizeApiKey(typeof parsed?.apiKey === "string" ? parsed.apiKey : undefined);
+      if (fileKey) return fileKey;
+    }
+  } catch {
+    // ignore
+  }
+
+  return undefined;
+}
+
+/**
+ * Builds a 401 error that distinguishes "no key was sent" from
+ * "a key was sent but Ollama Cloud rejected it". The legacy prefix is kept
+ * for backwards compatibility with existing clients/tests.
+ */
+export function buildCloudAuthError(hadApiKey: boolean): string {
+  const prefix = "Ollama Cloud authentication failed (401 Unauthorized).";
+  if (!hadApiKey) {
+    return (
+      `${prefix} No API key was sent with this request. ` +
+      "Please configure an API key via OLLAMA_API_KEY environment variable, incoming Authorization header, or run `ollama-lite config set apiKey <your-key>` (then restart `serve`). " +
+      "Get a key at https://ollama.com/settings/keys"
+    );
+  }
   return (
-    config?.apiKey ||
-    process.env.OLLAMA_API_KEY ||
-    process.env.OLLAMA_KEY ||
-    process.env.OLLAMA_LITE_API_KEY ||
-    undefined
+    `${prefix} Ollama Cloud rejected the configured API key (invalid, expired, or revoked). ` +
+    "Verify with `ollama-lite auth`, then replace it via `ollama-lite signin <new-key>` or OLLAMA_API_KEY environment variable / `ollama-lite config set apiKey <your-key>`. " +
+    "If you just ran `config set apiKey`, restart the daemon (`serve end` + `serve`) so it picks up the new key. " +
+    "Get a key at https://ollama.com/settings/keys"
   );
 }
 
@@ -88,8 +124,7 @@ export async function proxyCloudChat(params: {
     });
 
     if (upstreamRes.status === 401) {
-      const errDetail =
-        "Ollama Cloud authentication failed (401 Unauthorized). Please configure an API key via OLLAMA_API_KEY environment variable, incoming Authorization header, or run `ollama-lite config set apiKey <your-key>`. Get a key at https://ollama.com/settings/keys";
+      const errDetail = buildCloudAuthError(Boolean(apiKey));
       logger.error(errDetail);
       return Response.json({ error: errDetail }, { status: 401 });
     }
@@ -212,8 +247,7 @@ export async function proxyCloudGenerate(params: {
     });
 
     if (upstreamRes.status === 401) {
-      const errDetail =
-        "Ollama Cloud authentication failed (401 Unauthorized). Please configure an API key via OLLAMA_API_KEY environment variable, incoming Authorization header, or run `ollama-lite config set apiKey <your-key>`. Get a key at https://ollama.com/settings/keys";
+      const errDetail = buildCloudAuthError(Boolean(apiKey));
       logger.error(errDetail);
       return Response.json({ error: errDetail }, { status: 401 });
     }
@@ -333,6 +367,12 @@ export async function proxyCloudOpenAIChat(params: {
       body: JSON.stringify(payload),
     });
 
+    if (upstreamRes.status === 401) {
+      const errDetail = buildCloudAuthError(Boolean(apiKey));
+      logger.error(errDetail);
+      return Response.json({ error: { message: errDetail } }, { status: 401 });
+    }
+
     return new Response(upstreamRes.body, {
       status: upstreamRes.status,
       headers: upstreamRes.headers,
@@ -377,6 +417,12 @@ export async function proxyCloudOpenAICompletions(params: {
       headers,
       body: JSON.stringify(payload),
     });
+
+    if (upstreamRes.status === 401) {
+      const errDetail = buildCloudAuthError(Boolean(apiKey));
+      logger.error(errDetail);
+      return Response.json({ error: { message: errDetail } }, { status: 401 });
+    }
 
     return new Response(upstreamRes.body, {
       status: upstreamRes.status,
@@ -425,9 +471,7 @@ export async function streamCloudChatCli(params: {
   });
 
   if (res.status === 401) {
-    throw new Error(
-      "Ollama Cloud authentication failed (401 Unauthorized).\nPlease configure an API key using `ollama-lite config set apiKey <your-key>` or set OLLAMA_API_KEY environment variable.\nGet your API key at: https://ollama.com/settings/keys"
-    );
+    throw new Error(buildCloudAuthError(Boolean(apiKey)).replace(". ", ".\n"));
   }
 
   if (!res.ok || !res.body) {

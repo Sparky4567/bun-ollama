@@ -779,6 +779,22 @@ export async function cliConfig(args: string[], config: Config): Promise<void> {
     if (normalizedKey === "api-key") normalizedKey = "apiKey";
     if (normalizedKey === "cloud-host" || normalizedKey === "ollama-cloud-host") normalizedKey = "ollamaCloudHost";
 
+    if (normalizedKey === "apiKey") {
+      const { sanitizeApiKey } = await import("./config.ts");
+      const cleaned = sanitizeApiKey(String(value));
+      if (!cleaned) {
+        console.error("Invalid API key: value is empty after trimming.");
+        process.exit(1);
+      }
+      if (cleaned.startsWith("ssh-ed25519 ")) {
+        console.error(
+          'That looks like an SSH public key (ssh-ed25519 ...), not an Ollama API key. Get an API key at https://ollama.com/settings/keys and run `ollama-lite signin <key>`.'
+        );
+        process.exit(1);
+      }
+      value = cleaned;
+    }
+
     if (normalizedKey === "logLevel") {
       const validLevels: LogLevel[] = ["debug", "info", "warn", "error", "none"];
       if (!validLevels.includes(value as LogLevel)) {
@@ -796,6 +812,11 @@ export async function cliConfig(args: string[], config: Config): Promise<void> {
 
     saveConfig({ [normalizedKey]: value });
     console.log(`Updated config: ${normalizedKey} = ${normalizedKey === "apiKey" ? "********" : value}`);
+    if (normalizedKey === "apiKey") {
+      console.log(
+        "Note: `config set apiKey` saves without verifying. Run `ollama-lite auth` to verify, or prefer `ollama-lite signin <key>`. If `serve` is running, restart it (`serve end` + `serve`)."
+      );
+    }
     return;
   }
 

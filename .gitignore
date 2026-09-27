@@ -20,10 +20,19 @@ logs/
 coverage/
 *.lcov
 
-# dotenv environment variable files
+# dotenv environment variable files (may contain API keys)
 .env
 .env.*
 !.env.example
+
+# local secrets & credentials (never commit real keys)
+*.pem
+*.key
+id_ed25519
+id_ed25519.pub
+config.local.json
+*-config-dump.json
+.secrets/
 
 # caches
 .eslintcache

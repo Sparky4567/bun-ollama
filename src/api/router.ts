@@ -1,4 +1,5 @@
 import type { Config } from "../config.ts";
+import { refreshAuthConfig } from "../config.ts";
 import type { ProcessManager } from "../runtime/process-manager.ts";
 import { handleHealth } from "./health.ts";
 import {
@@ -31,6 +32,11 @@ export class ApiRouter {
     const url = new URL(req.url);
     const pathname = url.pathname;
     const method = req.method.toUpperCase();
+
+    // Refresh auth fields so `config set apiKey` after `serve` start is
+    // picked up without a daemon restart (env still wins over file).
+    refreshAuthConfig(this.config);
+    this.processManager.updateConfig(this.config);
 
     // CORS preflight
     if (method === "OPTIONS") {

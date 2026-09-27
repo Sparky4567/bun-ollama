@@ -25,6 +25,31 @@ export interface Config {
   ollamaCloudHost?: string;
 }
 
+/**
+ * Normalizes a user-supplied API key: trims whitespace/newlines, strips
+ * surrounding quotes and an optional `Bearer ` prefix. Returns undefined
+ * for empty input so empty strings never count as "configured".
+ */
+export function sanitizeApiKey(raw?: string | null): string | undefined {
+  if (raw == null) return undefined;
+  let cleaned = String(raw).trim();
+  if (!cleaned) return undefined;
+  // Strip surrounding single/double quotes (copy-paste artifact)
+  if (
+    cleaned.length >= 2 &&
+    ((cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+      (cleaned.startsWith("'") && cleaned.endsWith("'")))
+  ) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  if (!cleaned) return undefined;
+  // Allow pasting "Bearer <key>"
+  if (cleaned.toLowerCase().startsWith("bearer ")) {
+    cleaned = cleaned.slice(7).trim();
+  }
+  return cleaned || undefined;
+}
+
 const DEFAULT_CONFIG: Config = {
   host: "127.0.0.1",
   port: 11434,
@@ -116,7 +141,9 @@ export function loadConfig(configOverrides?: Partial<Config>): Config {
   const envContext = process.env.OLLAMA_LITE_CONTEXT ? parseInt(process.env.OLLAMA_LITE_CONTEXT, 10) : undefined;
   const envIdleTimeout = process.env.OLLAMA_LITE_IDLE_TIMEOUT ? parseInt(process.env.OLLAMA_LITE_IDLE_TIMEOUT, 10) : undefined;
   const envLogLevel = process.env.OLLAMA_LITE_LOG_LEVEL as LogLevel | undefined;
-  const envApiKey = process.env.OLLAMA_API_KEY || process.env.OLLAMA_KEY || process.env.OLLAMA_LITE_API_KEY;
+  const envApiKey = sanitizeApiKey(
+    process.env.OLLAMA_API_KEY || process.env.OLLAMA_KEY || process.env.OLLAMA_LITE_API_KEY
+  );
   const envCloudHost = process.env.OLLAMA_CLOUD_HOST || process.env.OLLAMA_LITE_CLOUD_HOST;
 
   const rawConfig: Config = {
@@ -129,7 +156,10 @@ export function loadConfig(configOverrides?: Partial<Config>): Config {
     idleTimeout: configOverrides?.idleTimeout ?? (envIdleTimeout && !isNaN(envIdleTimeout) ? envIdleTimeout : undefined) ?? fileConfig.idleTimeout ?? DEFAULT_CONFIG.idleTimeout,
     llamaServer: configOverrides?.llamaServer ?? envLlamaServer ?? fileConfig.llamaServer ?? DEFAULT_CONFIG.llamaServer,
     logLevel: configOverrides?.logLevel ?? envLogLevel ?? fileConfig.logLevel ?? DEFAULT_CONFIG.logLevel,
-    apiKey: configOverrides?.apiKey ?? envApiKey ?? fileConfig.apiKey,
+    apiKey:
+      sanitizeApiKey(configOverrides?.apiKey) ??
+      envApiKey ??
+      sanitizeApiKey(typeof fileConfig.apiKey === "string" ? fileConfig.apiKey : undefined),
     ollamaCloudHost: configOverrides?.ollamaCloudHost ?? envCloudHost ?? fileConfig.ollamaCloudHost ?? DEFAULT_CONFIG.ollamaCloudHost,
   };
 
@@ -164,9 +194,75 @@ export function saveConfig(updates: Partial<Config>): Config {
     }
   }
 
-  const merged = { ...fileConfig, ...updates };
+  const sanitizedUpdates: Partial<Config> = { ...updates };
+  if ("apiKey" in sanitizedUpdates) {
+    const cleaned = sanitizeApiKey(
+      typeof sanitizedUpdates.apiKey === "string" ? sanitizedUpdates.apiKey : undefined
+    );
+    if (cleaned) {
+      sanitizedUpdates.apiKey = cleaned;
+    } else {
+      // Empty/undefined clears the persisted key instead of storing "".
+      delete (fileConfig as any).apiKey;
+      delete (sanitizedUpdates as any).apiKey;
+    }
+  }
+
+  const merged = { ...fileConfig, ...sanitizedUpdates };
+  // Defensive: never persist an empty apiKey string.
+  if (typeof (merged as any).apiKey === "string" && !(merged as any).apiKey.trim()) {
+    delete (merged as any).apiKey;
+  }
   fs.writeFileSync(configPath, JSON.stringify(merged, null, 2), "utf-8");
   return loadConfig();
+}
+
+/**
+ * Re-reads auth-related fields (apiKey, ollamaCloudHost) from disk + env
+ * into a long-lived config object. The `serve` daemon loads Config once at
+ * startup, so without this a later `config set apiKey` is invisible until
+ * restart. Call before each cloud/auth request; mutates and returns config.
+ */
+export function refreshAuthConfig(config: Config): Config {
+  try {
+    const configPath = getDefaultConfigPath();
+    if (fs.existsSync(configPath)) {
+      try {
+        const content = fs.readFileSync(configPath, "utf-8");
+        const fileConfig = JSON.parse(content) as Partial<Config>;
+        const fileKey = sanitizeApiKey(
+          typeof fileConfig.apiKey === "string" ? fileConfig.apiKey : undefined
+        );
+        // Env always wins over file when set; otherwise pick up file changes.
+        const envKey = sanitizeApiKey(
+          process.env.OLLAMA_API_KEY || process.env.OLLAMA_KEY || process.env.OLLAMA_LITE_API_KEY
+        );
+        const nextKey = envKey ?? fileKey;
+        if (nextKey) {
+          config.apiKey = nextKey;
+        } else if (!envKey && fileKey === undefined && !process.env.OLLAMA_API_KEY && !process.env.OLLAMA_KEY && !process.env.OLLAMA_LITE_API_KEY) {
+          // Key was cleared from disk and no env override exists.
+          delete config.apiKey;
+        }
+        const envHost = process.env.OLLAMA_CLOUD_HOST || process.env.OLLAMA_LITE_CLOUD_HOST;
+        if (envHost) {
+          config.ollamaCloudHost = envHost;
+        } else if (typeof fileConfig.ollamaCloudHost === "string" && fileConfig.ollamaCloudHost) {
+          config.ollamaCloudHost = fileConfig.ollamaCloudHost;
+        }
+      } catch {
+        // Ignore parse errors; keep in-memory values.
+      }
+    } else {
+      const envKey = sanitizeApiKey(
+        process.env.OLLAMA_API_KEY || process.env.OLLAMA_KEY || process.env.OLLAMA_LITE_API_KEY
+      );
+      if (envKey) config.apiKey = envKey;
+    }
+  } catch {
+    // Never fail a request because of a config refresh.
+  }
+  return config;
 }
 
 /**
