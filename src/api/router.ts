@@ -12,6 +12,12 @@ import {
 } from "./models.ts";
 import { handleOllamaChat, handleOpenAIChat } from "./chat.ts";
 import { handleOllamaGenerate, handleOpenAICompletions } from "./generate.ts";
+import {
+  handleVersion,
+  handleOllamaEmbed,
+  handleOllamaEmbeddingsLegacy,
+  handleOpenAIEmbeddings,
+} from "./embeddings.ts";
 import { logger } from "../utils/logging.ts";
 
 export class ApiRouter {
@@ -88,6 +94,10 @@ export class ApiRouter {
           message: "Ollama Lite server is shutting down",
         });
       }
+      // Server version (ollama JS client `version()`)
+      else if (pathname === "/api/version" && method === "GET") {
+        res = handleVersion();
+      }
       // Ollama Models & Tags
       else if (pathname === "/api/tags" && method === "GET") {
         res = await handleListTags(this.config);
@@ -142,6 +152,13 @@ export class ApiRouter {
       else if (pathname === "/api/generate" && method === "POST") {
         res = await handleOllamaGenerate(req, this.processManager, this.config);
       }
+      // Ollama Embeddings (new + legacy, ollama JS `embed()` / `embeddings()`)
+      else if (pathname === "/api/embed" && method === "POST") {
+        res = await handleOllamaEmbed(req, this.processManager, this.config);
+      }
+      else if (pathname === "/api/embeddings" && method === "POST") {
+        res = await handleOllamaEmbeddingsLegacy(req, this.processManager, this.config);
+      }
       // OpenAI Models
       else if (pathname === "/v1/models" && method === "GET") {
         res = await handleOpenAIListModels(this.config);
@@ -153,6 +170,10 @@ export class ApiRouter {
       // OpenAI Completions
       else if (pathname === "/v1/completions" && method === "POST") {
         res = await handleOpenAICompletions(req, this.processManager, this.config);
+      }
+      // OpenAI Embeddings
+      else if (pathname === "/v1/embeddings" && method === "POST") {
+        res = await handleOpenAIEmbeddings(req, this.processManager, this.config);
       }
       // Not Found
       else {

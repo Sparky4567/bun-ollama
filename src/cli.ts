@@ -6,6 +6,12 @@ import { downloadModel, type DownloadProgress } from "./models/downloader.ts";
 import { detectOllamaDirectory, importAllLocalOllamaModels } from "./models/ollama-local.ts";
 import { ProcessManager } from "./runtime/process-manager.ts";
 import { startServer, stopRunningServer } from "./api/server.ts";
+import {
+  getDaemonStatus,
+  readDaemonLogs,
+  startDaemon,
+  stopDaemon,
+} from "./runtime/daemon.ts";
 import { normalizeChatMessages } from "./api/chat.ts";
 import { streamCloudChatCli } from "./runtime/cloud-client.ts";
 import { signIn, signOut, getAuthStatus, getOrCreateKeypair } from "./runtime/auth.ts";
@@ -920,6 +926,108 @@ export async function cliAuthStatus(config: Config): Promise<void> {
 }
 
 /**
+ * CLI Daemon Command - manages `serve --quiet` as a detached background daemon.
+ *
+ *   ollama-lite daemon            -> start detached daemon (equiv. `serve --quiet`)
+ *   ollama-lite daemon start      -> same, extra args forwarded to `serve`
+ *   ollama-lite daemon stop|end   -> stop the running daemon (equiv. `serve end`)
+ *   ollama-lite daemon restart    -> stop + start
+ *   ollama-lite daemon status     -> show PID / endpoint / log path
+ *   ollama-lite daemon logs [-n]  -> print last N lines of daemon.log
+ */
+export async function cliDaemon(args: string[], config: Config): Promise<void> {
+  const sub = args[0]?.toLowerCase();
+
+  if (!sub || sub === "start" || sub === "up" || sub === "run" || sub.startsWith("-")) {
+    const serveArgs = !sub || sub.startsWith("-") ? args : args.slice(1);
+    try {
+      const result = await startDaemon(config, { quiet: true, serveArgs });
+      console.log(result.message);
+    } catch (err: any) {
+      console.error(`Failed to start daemon: ${err.message}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === "stop" || sub === "end" || sub === "down" || sub === "kill") {
+    const result = await stopDaemon(config);
+    console.log(result.message);
+    if (!result.success) process.exit(1);
+    return;
+  }
+
+  if (sub === "restart") {
+    const rest = args.slice(1);
+    await stopDaemon(config);
+    await Bun.sleep(500);
+    try {
+      const result = await startDaemon(config, { quiet: true, serveArgs: rest });
+      console.log(result.message);
+    } catch (err: any) {
+      console.error(`Failed to restart daemon: ${err.message}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === "status" || sub === "ps" || sub === "info") {
+    const status = await getDaemonStatus(config);
+    if (status.running) {
+      console.log(`Ollama Lite daemon is running (PID ${status.pid}) at http://${status.host}:${status.port}`);
+      console.log(`Logs: ${status.logPath}`);
+    } else {
+      console.log(`Ollama Lite daemon is not running (expected at http://${status.host}:${status.port}).`);
+      console.log(`Start it with: ollama-lite daemon`);
+    }
+    return;
+  }
+
+  if (sub === "logs" || sub === "log") {
+    let lines = 50;
+    const nIdx = args.findIndex((a) => a === "-n" || a === "--lines");
+    const nVal = nIdx !== -1 ? args[nIdx + 1] : undefined;
+    if (nIdx !== -1 && nVal) {
+      const parsed = parseInt(nVal, 10);
+      if (!isNaN(parsed) && parsed > 0) lines = parsed;
+    }
+    console.log(readDaemonLogs(config, lines));
+    return;
+  }
+
+  if (sub === "help" || sub === "-h" || sub === "--help") {
+    printDaemonHelp();
+    return;
+  }
+
+  console.error(`Unknown daemon subcommand: "${args[0]}". Use "start", "stop", "restart", "status", or "logs".`);
+  printDaemonHelp();
+  process.exit(1);
+}
+
+export function printDaemonHelp(): void {
+  console.log(`
+Ollama Lite Daemon - detached background server (equiv. \`serve --quiet\`)
+
+Usage:
+  ollama-lite daemon [start] [--quiet]   Start detached daemon (default, returns immediately)
+  ollama-lite daemon stop|end            Stop the running daemon (same as \`serve end\`)
+  ollama-lite daemon restart             Restart the daemon
+  ollama-lite daemon status              Show daemon PID, endpoint, and log path
+  ollama-lite daemon logs [-n <lines>]   Print last N lines of the daemon log
+
+Examples:
+  ollama-lite daemon
+  ollama-lite daemon start
+  ollama-lite daemon status
+  ollama-lite daemon logs -n 100
+  ollama-lite daemon stop
+
+Logs: <runtimeDir>/daemon.log (see \`ollama-lite config get runtimeDir\`)
+`);
+}
+
+/**
  * Prints help text
  */
 export function printHelp(): void {
@@ -950,6 +1058,7 @@ Commands:
   rm <model>              Remove a model and unused storage blobs
   stop <model>            Stop an active inference server
   serve [end|stop]        Start or stop the HTTP API daemon (default port: 11434)
+  daemon [start|stop|restart|status|logs]  Manage serve --quiet as a detached background daemon
   benchmark <model>       Run inference benchmark passes and compute tok/s metrics
   config [get|set|list]   View or update persistent configuration (e.g. config set apiKey <key>)
   help                    Show this help message
@@ -969,5 +1078,7 @@ Examples:
   ollama-lite import-ollama --path ~/.ollama/models --copy
   ollama-lite serve
   ollama-lite serve end
+  ollama-lite daemon
+  ollama-lite daemon stop
 `);
 }

@@ -11,6 +11,7 @@ import {
   cliStop,
   cliServe,
   cliServeEnd,
+  cliDaemon,
   cliBenchmark,
   cliConfig,
   cliSignin,
@@ -32,10 +33,12 @@ export * from "./runtime/port-manager.ts";
 export * from "./runtime/health-check.ts";
 export * from "./runtime/llama-server.ts";
 export * from "./runtime/process-manager.ts";
+export * from "./runtime/daemon.ts";
 export * from "./runtime/cloud-client.ts";
 export * from "./runtime/auth.ts";
 export * from "./api/server.ts";
 export * from "./api/router.ts";
+export * from "./api/embeddings.ts";
 export * from "./cli.ts";
 
 export interface ParsedCliArgs {
@@ -175,6 +178,10 @@ async function main() {
 
     case "serve":
       await cliServe(parsed.args, config);
+      break;
+
+    case "daemon":
+      await cliDaemon(parsed.args, config);
       break;
 
     case "signin":

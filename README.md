@@ -107,6 +107,7 @@ bun run src/index.ts run llama3.2:1b "Why is the sky blue?"
 | `stop <model>` | Stop active inference process | `bun run src/index.ts stop llama3.2:1b` |
 | `serve` | Start Ollama Lite HTTP API daemon | `bun run src/index.ts serve --quiet` |
 | `serve end` | Stop running Ollama Lite HTTP API daemon | `bun run src/index.ts serve end` |
+| `daemon [start\|stop\|restart\|status\|logs]` | Manage `serve --quiet` as a detached background daemon (returns immediately, logs to `<runtimeDir>/daemon.log`) | `bun run src/index.ts daemon` |
 | `benchmark <model>` | Run inference benchmark & tok/s metrics | `bun run src/index.ts benchmark llama3.2:1b` |
 | `config [get/set/list]` | View or update persistent configuration | `bun run src/index.ts config set apiKey <key>` |
 
@@ -436,6 +437,20 @@ The proxy distinguishes two cases (both keep the `Ollama Cloud authentication fa
 
 - `No API key was sent` — nothing resolved from header/env/file. Set `OLLAMA_API_KEY` or run `signin` / `config set apiKey`.
 - `rejected the configured API key (invalid, expired, or revoked)` — a key was sent but Ollama Cloud refused it. Run `auth` to verify, then `signin <new-key>` to replace it.
+
+### Running as a Background Daemon
+
+`serve` blocks the terminal. `daemon` runs the equivalent of `serve --quiet` detached and returns immediately:
+
+```bash
+bun run src/index.ts daemon          # start detached (equiv. serve --quiet)
+bun run src/index.ts daemon status   # PID, endpoint, log path
+bun run src/index.ts daemon logs -n 100
+bun run src/index.ts daemon stop     # same PID/shutdown path as `serve end`
+bun run src/index.ts daemon restart
+```
+
+Details: PID is shared with `serve` (`<runtimeDir>/server.pid`, so `serve end` also stops it), child output goes to `<runtimeDir>/daemon.log`, and the effective host/port/dirs are forwarded to the child. `bun run daemon` is also available as an npm-style shortcut.
 
 ### Managing Logging Verbosity
 

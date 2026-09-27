@@ -14,6 +14,7 @@ export interface OllamaChatRequest {
   messages: ChatMessage[];
   stream?: boolean;
   format?: string;
+  tools?: any;
   options?: {
     temperature?: number;
     top_p?: number;
@@ -122,12 +123,17 @@ export async function handleOllamaChat(
     });
   }
 
-  const llamaPayload = {
+  const llamaPayload: any = {
     model: modelName,
     messages: normalizeChatMessages(body.messages),
     stream,
     ...mapChatOptions(body.options),
   };
+  // Forward function-calling tools to the backend (llama-server speaks the
+  // OpenAI tool_calls dialect). Cloud proxy already spreads the full body.
+  if ((body as any).tools) {
+    llamaPayload.tools = (body as any).tools;
+  }
 
   try {
     const upstreamRes = await fetch(`http://127.0.0.1:${modelProc.port}/v1/chat/completions`, {
@@ -152,14 +158,32 @@ export async function handleOllamaChat(
       const totalDurationNs = (Date.now() - startTime) * 1_000_000;
       const promptTokens = openaiJson.usage?.prompt_tokens || 0;
       const completionTokens = openaiJson.usage?.completion_tokens || 0;
+      const message: any = {
+        role: "assistant",
+        content,
+      };
+      const rawToolCalls = openaiJson.choices?.[0]?.message?.tool_calls;
+      if (Array.isArray(rawToolCalls) && rawToolCalls.length > 0) {
+        message.tool_calls = rawToolCalls.map((tc: any) => {
+          let args: any = {};
+          const rawArgs = tc.function?.arguments;
+          if (typeof rawArgs === "string" && rawArgs) {
+            try {
+              args = JSON.parse(rawArgs);
+            } catch {
+              args = { _raw: rawArgs };
+            }
+          } else if (rawArgs && typeof rawArgs === "object") {
+            args = rawArgs;
+          }
+          return { function: { name: tc.function?.name || "", arguments: args } };
+        });
+      }
 
       return Response.json({
         model: modelName,
         created_at: new Date().toISOString(),
-        message: {
-          role: "assistant",
-          content,
-        },
+        message,
         done: true,
         done_reason: openaiJson.choices?.[0]?.finish_reason || "stop",
         total_duration: totalDurationNs,
@@ -179,6 +203,7 @@ export async function handleOllamaChat(
     let evalCount = 0;
     let buffer = "";
     let doneSent = false;
+    const toolCallAcc: Record<number, { name: string; args: string }> = {};
 
     const streamBody = new ReadableStream({
       async start(controller) {
@@ -206,6 +231,18 @@ export async function handleOllamaChat(
                 const parsed = JSON.parse(dataStr);
                 const delta = parsed.choices?.[0]?.delta?.content;
                 const finishReason = parsed.choices?.[0]?.finish_reason;
+                const deltaToolCalls = parsed.choices?.[0]?.delta?.tool_calls;
+
+                // Accumulate streamed tool_call argument fragments (OpenAI SSE dialect).
+                if (Array.isArray(deltaToolCalls)) {
+                  for (const tc of deltaToolCalls) {
+                    const idx = tc.index ?? 0;
+                    if (!toolCallAcc[idx]) toolCallAcc[idx] = { name: "", args: "" };
+                    // biome-ignore lint: accumulate streamed fragments
+                    if (tc.function?.name) toolCallAcc[idx].name += tc.function.name;
+                    if (typeof tc.function?.arguments === "string") toolCallAcc[idx].args += tc.function.arguments;
+                  }
+                }
 
                 if (delta) {
                   evalCount++;
@@ -224,6 +261,33 @@ export async function handleOllamaChat(
                 if (finishReason) {
                   doneSent = true;
                   const totalDurationNs = (Date.now() - startTime) * 1_000_000;
+                  const toolCalls = Object.values(toolCallAcc)
+                    .filter((tc) => tc.name)
+                    .map((tc) => {
+                      let args: any = {};
+                      if (tc.args) {
+                        try {
+                          args = JSON.parse(tc.args);
+                        } catch {
+                          args = { _raw: tc.args };
+                        }
+                      }
+                      return { function: { name: tc.name, arguments: args } };
+                    });
+                  // Emit tool calls as a non-done chunk first (Ollama dialect),
+                  // so clients accumulating across chunks observe them.
+                  if (toolCalls.length > 0) {
+                    controller.enqueue(
+                      encoder.encode(
+                        JSON.stringify({
+                          model: modelName,
+                          created_at: new Date().toISOString(),
+                          message: { role: "assistant", content: "", tool_calls: toolCalls },
+                          done: false,
+                        }) + "\n"
+                      )
+                    );
+                  }
                   const finalChunk = {
                     model: modelName,
                     created_at: new Date().toISOString(),

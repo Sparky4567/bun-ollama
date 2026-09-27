@@ -12,6 +12,7 @@
     "ollama-lite": "bun run src/index.ts",
     "start": "bun run src/index.ts",
     "serve": "bun run src/index.ts serve",
+    "daemon": "bun run src/index.ts daemon",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
