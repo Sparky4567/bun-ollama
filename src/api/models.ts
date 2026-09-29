@@ -45,10 +45,14 @@ export async function handleListRunning(
   config: Config
 ): Promise<Response> {
   const running = processManager.list();
-  const now = Date.now();
+
+  // Sentinel expiry for "never": auto-unload disabled (idleTimeout <= 0),
+  // so the model stays loaded until explicitly stopped.
+  const NEVER_EXPIRES_MS = 100 * 365 * 24 * 3600 * 1000;
+  const idleTimeout = config.idleTimeout > 0 ? config.idleTimeout : NEVER_EXPIRES_MS;
 
   const models = running.map((p) => {
-    const expiresAt = new Date(p.lastUsedAt + config.idleTimeout).toISOString();
+    const expiresAt = new Date(p.lastUsedAt + idleTimeout).toISOString();
     return {
       name: p.model,
       model: p.model,

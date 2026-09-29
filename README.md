@@ -12,7 +12,7 @@ Bun acts as fast, lightweight glue responsible for:
 - Streaming model downloads with on-the-fly SHA-256 verification
 - Content-addressed blob storage & JSON manifests
 - Lifecycle management (lazy start, health checks, dynamic port allocation)
-- Automatic idle unloading to conserve RAM
+- Models stay loaded until explicitly stopped (optional idle-timeout auto-unload)
 - Full streaming HTTP API (Ollama + OpenAI compatibility)
 - Interactive CLI with live streaming tokens
 - Built-in benchmarking suite
@@ -76,6 +76,12 @@ Or pass a single prompt:
 ```bash
 bun run src/index.ts run llama3.2:1b "Why is the sky blue?"
 ```
+
+### 4. Model Lifecycle
+
+- `pull <model>` downloads and registers the model; `run <model>` reuses the local copy and never re-downloads a model that is already pulled.
+- Registry-prefixed references are aliases of the bare name: `ollama:gemma3:270m`, `ollama://gemma3:270m`, and `gemma3:270m` all resolve to the same stored model (`list` shows the canonical bare name).
+- A started model keeps running until you stop it (`stop <model>`, `/api/delete`, exiting `run`, or `serve end`). There is no idle auto-unload by default; set `idleTimeout` to a positive millisecond value to opt back into automatic unloading (see Configuration).
 
 ## CLI Reference
 
@@ -410,7 +416,7 @@ Configuration is loaded from `~/.ollama-lite/config.json` with environment varia
 | `runtimeDir` | `OLLAMA_LITE_RUNTIME` | `~/.ollama-lite/runtime` | Per-process logs and configs |
 | `llamaServer` | `OLLAMA_LITE_LLAMA_SERVER` | auto-detected | Path to `llama-server` binary |
 | `defaultContext`| `OLLAMA_LITE_CONTEXT` | `2048` | Context window size |
-| `idleTimeout` | `OLLAMA_LITE_IDLE_TIMEOUT` | `300000` (5m) | Idle duration before unloading |
+| `idleTimeout` | `OLLAMA_LITE_IDLE_TIMEOUT` | `0` (disabled) | Idle ms before auto-unloading; `0` = never unload, models run until stopped (`stop <model>`, `serve end`) |
 | `logLevel` | `OLLAMA_LITE_LOG_LEVEL` | `info` | Logging verbosity (`debug`/`info`/`warn`/`error`/`none`) |
 | `apiKey` | `OLLAMA_API_KEY` (`OLLAMA_KEY`, `OLLAMA_LITE_API_KEY` also accepted) | _(unset)_ | Ollama Cloud API key from `https://ollama.com/settings/keys`. Never commit this value. |
 | `ollamaCloudHost` | `OLLAMA_CLOUD_HOST` (`OLLAMA_LITE_CLOUD_HOST`) | `https://ollama.com` | Ollama Cloud endpoint (override for testing/mocks) |
@@ -473,6 +479,16 @@ You can adjust or disable logging through CLI flags, persistent configuration, o
   ```bash
   export OLLAMA_LITE_LOG_LEVEL=warn   # or 'none'
   ```
+
+## Recent Fixes
+
+### Pull-then-run no longer re-downloads `ollama:`-prefixed models
+
+Previously, `pull ollama:gemma3:270m` saved the manifest under the canonical name `gemma3:270m`, but `run ollama:gemma3:270m` looked the manifest up under the raw input and missed it — triggering a full re-download on every run. Storage paths, manifest names, and process-manager keys are now canonicalized (`canonicalModelName` in `src/utils/paths.ts`), so prefixed and bare references share one manifest, one blob, and one inference process.
+
+### Models no longer terminate after an idle timeout
+
+The process manager previously unloaded models after 5 minutes of inactivity (`idleTimeout: 300000`). Auto-unload is now disabled by default (`idleTimeout: 0`): a loaded model stays running until explicitly stopped. To restore the old behavior, run `ollama-lite config set idleTimeout 300000` and restart `serve`/`daemon`. `ps` and `GET /api/ps` report `never` in the expiry column while auto-unload is disabled.
 
 ## Running Tests
 

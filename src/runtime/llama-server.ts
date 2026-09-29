@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { normalizeModelName } from "../utils/paths.ts";
+import { normalizeModelName, canonicalModelName } from "../utils/paths.ts";
 import { logger } from "../utils/logging.ts";
 
 export interface SpawnLlamaServerOptions {
@@ -42,7 +42,7 @@ export function spawnLlamaServer(options: SpawnLlamaServerOptions): ManagedLlama
     throw new Error(`Model file not found at: ${modelPath}`);
   }
 
-  const normalized = normalizeModelName(modelName);
+  const normalized = normalizeModelName(canonicalModelName(modelName));
   const modelRuntimeDir = path.join(runtimeDir, normalized);
 
   if (!fs.existsSync(modelRuntimeDir)) {

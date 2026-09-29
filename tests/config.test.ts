@@ -8,7 +8,7 @@ describe("Configuration Manager", () => {
     expect(config.port).toBe(11434);
     expect(config.defaultContext).toBe(2048);
     expect(config.defaultQuantization).toBe("Q4_K_M");
-    expect(config.idleTimeout).toBe(300_000);
+    expect(config.idleTimeout).toBe(0);
   });
 
   it("applies config overrides", () => {

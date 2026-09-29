@@ -18,7 +18,7 @@ export interface Config {
   runtimeDir: string;
   defaultContext: number;
   defaultQuantization: string;
-  idleTimeout: number; // in milliseconds
+  idleTimeout: number; // in milliseconds. 0 (or negative) = disabled: models stay loaded until explicitly stopped.
   llamaServer: string;
   logLevel: LogLevel;
   apiKey?: string;
@@ -57,7 +57,7 @@ const DEFAULT_CONFIG: Config = {
   runtimeDir: "~/.ollama-lite/runtime",
   defaultContext: 4096,
   defaultQuantization: "Q4_K_M",
-  idleTimeout: 300_000, // 5 minutes
+  idleTimeout: 0, // disabled by default: models stay loaded until explicitly stopped
   llamaServer: "llama-server",
   logLevel: "info",
   ollamaCloudHost: "https://ollama.com",
@@ -153,7 +153,7 @@ export function loadConfig(configOverrides?: Partial<Config>): Config {
     runtimeDir: configOverrides?.runtimeDir ?? envRuntime ?? fileConfig.runtimeDir ?? DEFAULT_CONFIG.runtimeDir,
     defaultContext: configOverrides?.defaultContext ?? (envContext && !isNaN(envContext) ? envContext : undefined) ?? fileConfig.defaultContext ?? DEFAULT_CONFIG.defaultContext,
     defaultQuantization: configOverrides?.defaultQuantization ?? fileConfig.defaultQuantization ?? DEFAULT_CONFIG.defaultQuantization,
-    idleTimeout: configOverrides?.idleTimeout ?? (envIdleTimeout && !isNaN(envIdleTimeout) ? envIdleTimeout : undefined) ?? fileConfig.idleTimeout ?? DEFAULT_CONFIG.idleTimeout,
+    idleTimeout: configOverrides?.idleTimeout ?? (envIdleTimeout !== undefined && !isNaN(envIdleTimeout) ? envIdleTimeout : undefined) ?? fileConfig.idleTimeout ?? DEFAULT_CONFIG.idleTimeout,
     llamaServer: configOverrides?.llamaServer ?? envLlamaServer ?? fileConfig.llamaServer ?? DEFAULT_CONFIG.llamaServer,
     logLevel: configOverrides?.logLevel ?? envLogLevel ?? fileConfig.logLevel ?? DEFAULT_CONFIG.logLevel,
     apiKey:
@@ -167,6 +167,11 @@ export function loadConfig(configOverrides?: Partial<Config>): Config {
   rawConfig.modelsDir = expandPath(rawConfig.modelsDir);
   rawConfig.runtimeDir = expandPath(rawConfig.runtimeDir);
   rawConfig.llamaServer = findLlamaServer(rawConfig.llamaServer);
+
+  // idleTimeout <= 0 (or non-numeric) disables auto-unload: models run until stopped.
+  if (typeof rawConfig.idleTimeout !== "number" || !Number.isFinite(rawConfig.idleTimeout) || rawConfig.idleTimeout < 0) {
+    rawConfig.idleTimeout = 0;
+  }
 
   // Set global log level
   setLogLevel(rawConfig.logLevel);

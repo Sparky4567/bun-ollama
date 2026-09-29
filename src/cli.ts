@@ -135,8 +135,18 @@ export async function cliPs(config: Config): Promise<void> {
       console.log("-".repeat(60));
 
       for (const m of models) {
-        const expiresInMs = new Date(m.expires_at).getTime() - Date.now();
-        const expiresStr = expiresInMs > 0 ? `${Math.round(expiresInMs / 1000)}s` : "now";
+        let expiresStr = "never";
+        if (m.expires_at) {
+          const expiresInMs = new Date(m.expires_at).getTime() - Date.now();
+          if (Number.isFinite(expiresInMs)) {
+            expiresStr =
+              expiresInMs > 30 * 24 * 3600 * 1000
+                ? "never"
+                : expiresInMs > 0
+                  ? `${Math.round(expiresInMs / 1000)}s`
+                  : "now";
+          }
+        }
         const isCloud = Boolean(m.is_cloud || m.format === "cloud");
         const portStr = isCloud ? "cloud" : String(m.port);
         const sizeStr = isCloud ? "cloud" : formatBytes(m.size);
@@ -744,7 +754,7 @@ export async function cliConfig(args: string[], config: Config): Promise<void> {
     console.log(`  runtimeDir:          ${config.runtimeDir}`);
     console.log(`  defaultContext:      ${config.defaultContext}`);
     console.log(`  defaultQuantization: ${config.defaultQuantization}`);
-    console.log(`  idleTimeout:         ${config.idleTimeout}ms`);
+    console.log(`  idleTimeout:         ${config.idleTimeout}ms${config.idleTimeout > 0 ? "" : " (disabled - models run until stopped)"}`);
     console.log(`  llamaServer:         ${config.llamaServer}`);
     console.log(`  apiKey:              ${config.apiKey ? "********" : "(not set)"}`);
     console.log(`  ollamaCloudHost:     ${config.ollamaCloudHost || "https://ollama.com"}`);
@@ -813,11 +823,20 @@ export async function cliConfig(args: string[], config: Config): Promise<void> {
         console.error(`Invalid number for ${key}: "${value}"`);
         process.exit(1);
       }
+      if (normalizedKey === "idleTimeout" && num < 0) {
+        console.error(`Invalid idleTimeout: "${value}". Use 0 to disable auto-unload (models run until stopped), or a positive number of milliseconds.`);
+        process.exit(1);
+      }
       value = num;
     }
 
     saveConfig({ [normalizedKey]: value });
     console.log(`Updated config: ${normalizedKey} = ${normalizedKey === "apiKey" ? "********" : value}`);
+    if (normalizedKey === "idleTimeout") {
+      console.log(
+        "Note: `config set idleTimeout` applies to newly started servers. If `serve`/`daemon` is running, restart it (`serve end` + `serve`, or `daemon restart`)."
+      );
+    }
     if (normalizedKey === "apiKey") {
       console.log(
         "Note: `config set apiKey` saves without verifying. Run `ollama-lite auth` to verify, or prefer `ollama-lite signin <key>`. If `serve` is running, restart it (`serve end` + `serve`)."

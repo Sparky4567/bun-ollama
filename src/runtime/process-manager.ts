@@ -1,6 +1,7 @@
 import type { Config } from "../config.ts";
 import { getManifest } from "../models/storage.ts";
 import { downloadModel, type ProgressCallback } from "../models/downloader.ts";
+import { canonicalModelName } from "../utils/paths.ts";
 import { portManager } from "./port-manager.ts";
 import { spawnLlamaServer, type ManagedLlamaServer } from "./llama-server.ts";
 import { waitForHealthy } from "./health-check.ts";
@@ -47,7 +48,9 @@ export class ProcessManager {
   }
 
   /**
-   * Starts periodic idle check to unload inactive models.
+   * Periodic idle check. Auto-unload is opt-in: when `idleTimeout` is 0
+   * (the default) models stay loaded until explicitly stopped and this
+   * tick is a no-op.
    */
   private startIdleChecker(): void {
     if (this.idleCheckInterval) return;
@@ -55,6 +58,10 @@ export class ProcessManager {
     this.idleCheckInterval = setInterval(() => {
       const now = Date.now();
       const idleTimeout = this.config.idleTimeout;
+
+      if (!(idleTimeout > 0)) {
+        return;
+      }
 
       for (const [model, proc] of this.processes.entries()) {
         if (proc.state === "ready" && now - proc.lastUsedAt > idleTimeout) {
@@ -79,27 +86,29 @@ export class ProcessManager {
     modelName: string,
     onProgress?: ProgressCallback
   ): Promise<ModelProcess> {
-    const existing = this.processes.get(modelName);
+    // Canonicalize so `ollama:gemma3:270m` and `gemma3:270m` share one process entry.
+    const canonicalName = canonicalModelName(modelName.trim());
+    const existing = this.processes.get(canonicalName);
     if (existing && existing.state === "ready" && (existing.isCloud || !existing.server?.process.killed)) {
-      this.touch(modelName);
+      this.touch(canonicalName);
       return existing;
     }
 
     // Check if another request is currently starting this model
-    const pendingLock = this.startupLocks.get(modelName);
+    const pendingLock = this.startupLocks.get(canonicalName);
     if (pendingLock) {
-      logger.debug(`Joining existing startup promise for ${modelName}`);
+      logger.debug(`Joining existing startup promise for ${canonicalName}`);
       return await pendingLock;
     }
 
     const startupPromise = (async () => {
       try {
         // 1. Check if model exists locally in manifests
-        let manifest = await getManifest(modelName, this.config);
+        let manifest = await getManifest(canonicalName, this.config);
 
         if (!manifest) {
-          logger.info(`Model ${modelName} not found locally. Starting automatic download/registration.`);
-          manifest = await downloadModel(modelName, {
+          logger.info(`Model ${canonicalName} not found locally. Starting automatic download/registration.`);
+          manifest = await downloadModel(canonicalName, {
             config: this.config,
             onProgress,
           });
@@ -108,7 +117,7 @@ export class ProcessManager {
         // Check if this is an Ollama Cloud model
         if (manifest.is_cloud || manifest.source === "ollama-cloud" || manifest.format === "cloud") {
           const cloudProc: ModelProcess = {
-            model: modelName,
+            model: canonicalName,
             port: 0,
             startedAt: Date.now(),
             lastUsedAt: Date.now(),
@@ -119,19 +128,19 @@ export class ProcessManager {
             remoteHost: manifest.remote_host,
             remoteModel: manifest.remote_model,
           };
-          this.processes.set(modelName, cloudProc);
-          logger.info(`Model ${modelName} is ready as an Ollama Cloud model.`);
+          this.processes.set(canonicalName, cloudProc);
+          logger.info(`Model ${canonicalName} is ready as an Ollama Cloud model.`);
           return cloudProc;
         }
 
         // 2. Start the local model server
-        return await this.startProcess(modelName, manifest.blob_path, manifest.digest, manifest.size, manifest.parameters?.context_size);
+        return await this.startProcess(canonicalName, manifest.blob_path, manifest.digest, manifest.size, manifest.parameters?.context_size);
       } finally {
-        this.startupLocks.delete(modelName);
+        this.startupLocks.delete(canonicalName);
       }
     })();
 
-    this.startupLocks.set(modelName, startupPromise);
+    this.startupLocks.set(canonicalName, startupPromise);
     return await startupPromise;
   }
 
@@ -200,17 +209,19 @@ export class ProcessManager {
    * Stops a running model process and releases its port.
    */
   async stop(modelName: string): Promise<boolean> {
-    const proc = this.processes.get(modelName);
+    const canonicalName = canonicalModelName(modelName.trim());
+    const proc = this.processes.get(canonicalName) ?? this.processes.get(modelName);
     if (!proc) return false;
 
     proc.state = "stopping";
     if (proc.isCloud) {
+      this.processes.delete(canonicalName);
       this.processes.delete(modelName);
       proc.state = "stopped";
       return true;
     }
 
-    logger.info(`Stopping model process ${modelName} on port ${proc.port}`);
+    logger.info(`Stopping model process ${canonicalName} on port ${proc.port}`);
 
     try {
       proc.server?.kill("SIGTERM");
@@ -227,6 +238,7 @@ export class ProcessManager {
       // Process may already have terminated
     } finally {
       portManager.releasePort(proc.port);
+      this.processes.delete(canonicalName);
       this.processes.delete(modelName);
       proc.state = "stopped";
     }
@@ -246,7 +258,12 @@ export class ProcessManager {
    * Gets a running model process if available.
    */
   get(modelName: string): ModelProcess | undefined {
-    return this.processes.get(modelName);
+    try {
+      const canonicalName = canonicalModelName(modelName.trim());
+      return this.processes.get(canonicalName) ?? this.processes.get(modelName);
+    } catch {
+      return this.processes.get(modelName);
+    }
   }
 
   /**
@@ -260,7 +277,13 @@ export class ProcessManager {
    * Updates the last used timestamp for a model.
    */
   touch(modelName: string): void {
-    const proc = this.processes.get(modelName);
+    let proc: ModelProcess | undefined;
+    try {
+      const canonicalName = canonicalModelName(modelName.trim());
+      proc = this.processes.get(canonicalName) ?? this.processes.get(modelName);
+    } catch {
+      proc = this.processes.get(modelName);
+    }
     if (proc) {
       proc.lastUsedAt = Date.now();
     }
