@@ -92,10 +92,18 @@ export function findLlamaServer(preferredPath?: string): string {
   for (const candidate of candidates) {
     try {
       if (candidate.includes(path.sep)) {
-        if (fs.existsSync(candidate)) {
-          const stat = fs.statSync(candidate);
-          if (stat.isFile() && (stat.mode & 0o111)) {
-            return candidate;
+        // On Windows the binary is llama-server.exe and the exec-bit check
+        // is meaningless, so accept any existing file (with or without .exe).
+        const variants =
+          process.platform === "win32" && !candidate.toLowerCase().endsWith(".exe")
+            ? [candidate, `${candidate}.exe`]
+            : [candidate];
+        for (const variant of variants) {
+          if (fs.existsSync(variant)) {
+            const stat = fs.statSync(variant);
+            if (stat.isFile() && (process.platform === "win32" || stat.mode & 0o111)) {
+              return variant;
+            }
           }
         }
       } else {
@@ -103,6 +111,13 @@ export function findLlamaServer(preferredPath?: string): string {
         const resolved = Bun.which(candidate);
         if (resolved) {
           return resolved;
+        }
+        // Windows: also probe the .exe spelling explicitly (PATHEXT).
+        if (process.platform === "win32") {
+          const resolvedExe = Bun.which(`${candidate}.exe`);
+          if (resolvedExe) {
+            return resolvedExe;
+          }
         }
       }
     } catch {

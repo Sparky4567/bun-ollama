@@ -53,6 +53,7 @@ Bun acts as fast, lightweight glue responsible for:
 ### 1. Requirements
 - [Bun](https://bun.sh) (v1.1+)
 - `llama-server` (from `llama.cpp` or Ollama installation)
+- Windows 10/11 works too (`curl.exe`/`tar.exe` ship inbox; PowerShell is used as a fallback)
 
 ### 2. Installation
 Run the automated installer:
@@ -60,10 +61,27 @@ Run the automated installer:
 ./installer.sh
 ```
 
+On Windows (`cmd.exe`, no admin rights required):
+```bat
+install.bat
+```
+This installs Bun (if missing), downloads the prebuilt `llama-server.exe`
+CPU build for your architecture into `%USERPROFILE%\.ollama-lite\bin`,
+runs `bun install`, creates `ollama-lite.bat` shims (plus a repo-local
+`bin\ollama-lite.bat` launcher), and adds that `bin` dir to your user PATH.
+
+After `install.bat`, open a **new** terminal so the PATH change takes effect,
+then use `ollama-lite <command>` anywhere. Without installing, run
+`bin\ollama-lite.bat <command>` from the project folder.
+
 Or manually with Bun:
 ```bash
 bun install
 chmod +x bin/ollama-lite
+```
+```bat
+bun install
+REM Windows manual alternative, no installer: bin\ollama-lite.bat <command>
 ```
 
 ### 3. Run a Model
@@ -71,6 +89,7 @@ Download, start inference, and chat interactively:
 ```bash
 bun run src/index.ts run llama3.2:1b
 ```
+Windows (installed): `ollama-lite run llama3.2:1b`
 
 Or pass a single prompt:
 ```bash
