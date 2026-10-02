@@ -1,0 +1,4 @@
+# Keep Unix shell scripts LF-only and Windows batch files CRLF so both
+# execute correctly regardless of the committer's core.autocrlf setting.
+*.sh text eol=lf
+*.bat text eol=crlf
