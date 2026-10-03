@@ -477,6 +477,16 @@ bun run src/index.ts daemon restart
 
 Details: PID is shared with `serve` (`<runtimeDir>/server.pid`, so `serve end` also stops it), child output goes to `<runtimeDir>/daemon.log`, and the effective host/port/dirs are forwarded to the child. `bun run daemon` is also available as an npm-style shortcut.
 
+Only one server can own port 11434 at a time: `serve` and `daemon` share the same PID file and endpoint, so starting one while the other holds the port fails with `Failed to start server. Is port 11434 in use?` (see `daemon.log`). Stop the holder first (`serve end` or `daemon stop`), then start the one you want.
+
+### Model Names: Bare vs `ollama:`-Prefixed vs Typos
+
+`llama3.2:1b` and `ollama:llama3.2:1b` resolve to the same local manifest (canonicalized in `src/utils/paths.ts`), so `pull`, `run`, `show`, and `/api/chat` accept either spelling. `llama:3.2:1b` (extra colon) is not a real model and fails resolution with `Unsupported model "llama:3.2:1b"...` — use `llama3.2:1b`.
+
+### Slow CPU Inference and the HTTP `idleTimeout`
+
+Local CPU inference is slow on small hosts (e.g. ~20s for a trivial prompt, 60–130s+ for a large system + history prompt on a 1.2 GB Q8_0 model). `Bun.serve()` defaults to a 10s idle timeout, which used to kill those long generations mid-stream so clients received an empty reply. `startServer` (`src/api/server.ts`) now sets `idleTimeout: 255` (the Bun maximum). If you still see `Bun.serve() timed out a request after 10 seconds` in `daemon.log`, restart `serve`/`daemon` — you are running a build from before this fix. For faster turns, prefer a smaller local model (e.g. `gemma3:270m`) or a `-cloud` model.
+
 ### Managing Logging Verbosity
 
 You can adjust or disable logging through CLI flags, persistent configuration, or environment variables:
@@ -500,6 +510,10 @@ You can adjust or disable logging through CLI flags, persistent configuration, o
   ```
 
 ## Recent Fixes
+
+### HTTP server no longer drops slow CPU inference (`idleTimeout: 255`)
+
+`Bun.serve()` defaults to a 10s idle timeout. On small CPU hosts a `llama3.2:1b` turn takes 20–130s+, so the server killed the stream mid-generation and API clients got an empty reply (`Bun.serve() timed out a request after 10 seconds` in `daemon.log`). `startServer` now sets `idleTimeout: 255` (Bun maximum). Restart `serve`/`daemon` after pulling this change.
 
 ### Pull-then-run no longer re-downloads `ollama:`-prefixed models
 

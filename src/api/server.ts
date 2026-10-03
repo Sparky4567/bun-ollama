@@ -56,6 +56,12 @@ export function startServer(config: Config, options?: StartServerOptions): Serve
   const server = Bun.serve({
     hostname: config.host,
     port: config.port,
+    // CPU inference on small hosts can take 60-130s for a full
+    // dagowan-style prompt (system + memories + history). Bun's default
+    // idleTimeout is 10s, which kills those slow streams and the client
+    // sees an empty reply ("get nothing"). Allow the Bun maximum
+    // (255s) per request.
+    idleTimeout: 255,
     fetch(req) {
       return router.handle(req);
     },
