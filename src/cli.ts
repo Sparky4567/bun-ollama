@@ -365,8 +365,93 @@ export async function cliServe(
   await new Promise(() => {});
 }
 
+export interface ParsedRunArgs {
+  promptParts: string[];
+  messagesJson?: string;
+  messagesFile?: string;
+}
+
+/**
+ * Extracts `run` flags from the args following `<model>`. Everything else
+ * stays positional prompt text (legacy `run <model> [prompt]` behavior).
+ * Pure function — unit-tested in tests/run-args.test.ts.
+ */
+export function parseRunArgs(promptArgs: string[]): ParsedRunArgs {
+  const promptParts: string[] = [];
+  let messagesJson: string | undefined;
+  let messagesFile: string | undefined;
+
+  for (let i = 0; i < promptArgs.length; i++) {
+    const arg = promptArgs[i];
+    if (arg === "--messages-json" && i + 1 < promptArgs.length) {
+      messagesJson = promptArgs[++i];
+    } else if (arg && arg.startsWith("--messages-json=")) {
+      messagesJson = arg.slice("--messages-json=".length);
+    } else if (arg === "--messages-file" && i + 1 < promptArgs.length) {
+      messagesFile = promptArgs[++i];
+    } else if (arg && arg.startsWith("--messages-file=")) {
+      messagesFile = arg.slice("--messages-file=".length);
+    } else {
+      promptParts.push(arg as string);
+    }
+  }
+  return { promptParts, messagesJson, messagesFile };
+}
+
+export type RunChatRole = "system" | "user" | "assistant";
+
+/**
+ * Resolves --messages-json / --messages-file into a role-labeled message
+ * array. Returns null when neither flag was given (flat prompt mode).
+ * Throws a human-readable Error on invalid input (caller reports + exits).
+ */
+export function resolveRunMessages(
+  parsed: ParsedRunArgs
+): Array<{ role: RunChatRole; content: string }> | null {
+  let raw: string | undefined;
+  if (parsed.messagesJson !== undefined) {
+    raw = parsed.messagesJson;
+  } else if (parsed.messagesFile !== undefined) {
+    try {
+      raw = fs.readFileSync(parsed.messagesFile, "utf-8");
+    } catch (err: any) {
+      throw new Error(`Cannot read --messages-file "${parsed.messagesFile}": ${err.message}`);
+    }
+  } else {
+    return null;
+  }
+
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    throw new Error(`Invalid --messages-json/--messages-file: not valid JSON.`);
+  }
+  if (!Array.isArray(data) || data.length === 0) {
+    throw new Error(`Invalid --messages-json/--messages-file: expected a non-empty array of {role, content}.`);
+  }
+  return data.map((m: any, i: number) => {
+    const role = String(m?.role || "").toLowerCase();
+    if (role !== "system" && role !== "user" && role !== "assistant") {
+      throw new Error(
+        `Invalid --messages-json/--messages-file: message[${i}].role must be "system", "user" or "assistant".`
+      );
+    }
+    return { role: role as RunChatRole, content: String(m?.content ?? "") };
+  });
+}
+
 /**
  * CLI Run Command (Interactive chat or single-shot prompt)
+ *
+ * Single-shot contract (for scripts and API bridges):
+ *   - `run <model> [prompt]` answers once, unloads the model, and exits.
+ *   - stdout carries ONLY the generated answer tokens.
+ *   - Status lines ("Loading model ..."), progress bars and [INFO]/[DEBUG]
+ *     logs all go to stderr.
+ *   - `--messages-json '<json>'` / `--messages-file <path>` accept a
+ *     role-labeled array ([{role: "system"|"user"|"assistant", content}])
+ *     instead of a flat prompt string.
  */
 export async function cliRun(
   modelName: string,
@@ -390,9 +475,24 @@ export async function cliRun(
     process.exit(0);
   });
 
+  // Single-shot flags (--messages-json / --messages-file) are validated
+  // before any download or model load so bad input fails fast.
+  const runArgs = parseRunArgs(promptArgs);
+  let runMessages: Array<{ role: RunChatRole; content: string }> | null = null;
+  if (runArgs.messagesJson !== undefined || runArgs.messagesFile !== undefined) {
+    try {
+      runMessages = resolveRunMessages(runArgs);
+    } catch (err: any) {
+      console.error(`Error: ${err.message}`);
+      await cleanup();
+      process.exit(1);
+    }
+  }
+
   let manifest = await getManifest(modelName, config);
   if (!manifest) {
-    console.log(`Model "${modelName}" not found locally. Downloading automatically...`);
+    // stderr: stdout is reserved for the answer tokens in single-shot mode.
+    console.error(`Model "${modelName}" not found locally. Downloading automatically...`);
     try {
       manifest = await downloadModel(modelName, {
         config,
@@ -411,7 +511,8 @@ export async function cliRun(
     }
   }
 
-  console.log(`Loading model ${modelName}...`);
+  // Status line goes to stderr: stdout is reserved for the answer tokens.
+  console.error(`Loading model ${modelName}...`);
   let modelProc;
   try {
     modelProc = await processManager.ensureModelReady(modelName);
@@ -423,14 +524,15 @@ export async function cliRun(
 
   const isCloud = Boolean(manifest.is_cloud || manifest.source === "ollama-cloud" || manifest.format === "cloud" || modelProc.isCloud);
 
-  // If a prompt was provided on the CLI, do single-shot execution
-  if (promptArgs.length > 0) {
-    const prompt = promptArgs.join(" ");
+  // If a prompt or --messages-json/--messages-file was provided on the CLI,
+  // do single-shot execution (answer once, unload, exit).
+  if (runMessages || runArgs.promptParts.length > 0) {
+    const messages = runMessages ?? [{ role: "user" as const, content: runArgs.promptParts.join(" ") }];
     if (isCloud) {
       try {
         await streamCloudChatCli({
           modelName,
-          messages: [{ role: "user", content: prompt }],
+          messages,
           manifest,
           config,
         });
@@ -439,7 +541,7 @@ export async function cliRun(
         console.error(`\nCloud error: ${err.message}`);
       }
     } else {
-      await streamChatCompletion(modelProc.port, [{ role: "user", content: prompt }]);
+      await streamChatCompletion(modelProc.port, messages);
     }
     await cleanup();
     return;
@@ -1065,7 +1167,10 @@ Flags:
   -v, --version           Show Ollama Lite version
 
 Commands:
-  run <model> [prompt]    Run a model (starts interactive chat if prompt is omitted)
+  run <model> [prompt]    Run a model (starts interactive chat if prompt is omitted).
+                          Single-shot prints ONLY the answer to stdout (status/logs go to stderr).
+                          Use --messages-json '<json>' / --messages-file <path> for a
+                          role-labeled [{role, content}] array instead of flat prompt text.
   pull <model>            Download/register model from Ollama Registry, Cloud, or Hugging Face
   signin, login [key]     Sign in with your Ollama.com account / API key
   signout, logout         Sign out from Ollama Cloud
@@ -1089,6 +1194,8 @@ Examples:
   ollama-lite auth
   ollama-lite run gpt-oss:120b-cloud
   ollama-lite run gpt-oss:120b-cloud "Explain quantum computing in one sentence"
+  ollama-lite run smollm2:135m --messages-json '[{"role":"system","content":"Answer briefly."},{"role":"user","content":"Why is the sky blue?"}]'
+  ollama-lite run smollm2:135m --messages-file ./messages.json
   ollama-lite pull gpt-oss:120b-cloud
   ollama-lite run llama3.2:1b
   ollama-lite run ollama:deepseek-r1:8b

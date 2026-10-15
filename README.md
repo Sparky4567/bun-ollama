@@ -96,6 +96,19 @@ Or pass a single prompt:
 bun run src/index.ts run llama3.2:1b "Why is the sky blue?"
 ```
 
+Or pass a role-labeled conversation (system + history preserved):
+```bash
+bun run src/index.ts run smollm2:135m --messages-json '[{"role":"system","content":"Answer briefly."},{"role":"user","content":"Why is the sky blue?"}]'
+bun run src/index.ts run smollm2:135m --messages-file ./messages.json
+```
+
+Single-shot contract (for scripts and bridges): the model loads, answers
+once, unloads (RAM freed), and the process exits. **stdout carries ONLY the
+generated answer** — status lines (`Loading model ...`), progress bars and
+`[INFO]`/`[DEBUG]` logs all go to stderr, so stdout is safe to pipe.
+Invalid `--messages-json`/`--messages-file` input fails with a clear stderr
+error and exit code 1 before anything is downloaded or loaded.
+
 ### 4. Model Lifecycle
 
 - `pull <model>` downloads and registers the model; `run <model>` reuses the local copy and never re-downloads a model that is already pulled.
@@ -119,7 +132,7 @@ bun run src/index.ts run llama3.2:1b "Why is the sky blue?"
 
 | Command | Description | Example |
 |---|---|---|
-| `run <model> [prompt]` | Interactive chat or single-shot generation | `bun run src/index.ts run gpt-oss:120b-cloud` |
+| `run <model> [prompt]` | Interactive chat or single-shot generation (single-shot: answer-only stdout, logs on stderr; `--messages-json '<json>'` / `--messages-file <path>` for role-labeled history) | `bun run src/index.ts run gpt-oss:120b-cloud` |
 | `pull <model>` | Download/register model from Ollama Registry or Cloud | `bun run src/index.ts pull gpt-oss:120b-cloud` |
 | `signin, login [key]` | Authenticate with your Ollama.com account / API key | `bun run src/index.ts signin` |
 | `signout, logout` | Sign out from Ollama Cloud | `bun run src/index.ts signout` |

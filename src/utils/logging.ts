@@ -53,15 +53,20 @@ function formatTag(level: LogLevel): string {
 }
 
 export const logger = {
+  // NOTE: info/debug go to stderr (not stdout) so that single-shot
+  // `run <model> [prompt]` prints ONLY the generated answer on stdout.
+  // Status lines, progress and logs are all consumable on stderr, which
+  // keeps stdout safe to pipe into files or other programs. The `serve`
+  // daemon merges both streams into daemon.log, so it is unaffected.
   debug(message: string, ...args: any[]): void {
     if (shouldLog("debug")) {
-      console.log(`${formatTag("debug")} ${message}`, ...args);
+      console.error(`${formatTag("debug")} ${message}`, ...args);
     }
   },
 
   info(message: string, ...args: any[]): void {
     if (shouldLog("info")) {
-      console.log(`${formatTag("info")} ${message}`, ...args);
+      console.error(`${formatTag("info")} ${message}`, ...args);
     }
   },
 
