@@ -42,6 +42,26 @@ export function spawnLlamaServer(options: SpawnLlamaServerOptions): ManagedLlama
     throw new Error(`Model file not found at: ${modelPath}`);
   }
 
+  // Fail fast with an actionable message if the configured llama-server binary
+  // cannot be located, instead of letting Bun.spawn throw a cryptic
+  // "Executable not found in $PATH" error later.
+  if (llamaServerBin.includes(path.sep)) {
+    if (!fs.existsSync(llamaServerBin)) {
+      throw new Error(
+        `llama-server binary not found at "${llamaServerBin}". Install llama.cpp or set OLLAMA_LITE_LLAMA_SERVER to a valid path.`
+      );
+    }
+  } else {
+    const resolved = Bun.which(llamaServerBin);
+    const resolvedExe =
+      !resolved && process.platform === "win32" ? Bun.which(`${llamaServerBin}.exe`) : null;
+    if (!resolved && !resolvedExe) {
+      throw new Error(
+        `Executable not found in $PATH: "${llamaServerBin}". Install llama.cpp (llama-server) or set OLLAMA_LITE_LLAMA_SERVER.`
+      );
+    }
+  }
+
   const normalized = normalizeModelName(canonicalModelName(modelName));
   const modelRuntimeDir = path.join(runtimeDir, normalized);
 

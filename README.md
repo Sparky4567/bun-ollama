@@ -469,7 +469,31 @@ Notes:
 - The `serve` daemon refreshes `apiKey`/`ollamaCloudHost` from disk + env on every request, but restart after key rotation (`serve end` + `serve`) for a clean state.
 - Never commit `~/.ollama-lite/config.json`, `.env` files, or `id_ed25519*` keys. Test fixtures in this repo use dummy values (`test-cloud-api-key`, `valid-secret-key`) only.
 
-#### Troubleshooting `401 Unauthorized`
+#### Troubleshooting `Executable not found in $PATH: "llama-server"`
+
+Ollama Lite delegates inference to the native `llama-server` binary from
+`llama.cpp`. If `run`/`serve` fails with this error, Ollama Lite could not
+locate a usable `llama-server` on your system. It searches:
+
+- `PATH` (via `Bun.which`)
+- `OLLAMA_LITE_LLAMA_SERVER` environment variable / config value
+- Standard install locations such as `~/.ollama-lite/bin`, `~/.local/bin`,
+  `/usr/local/bin`, `/usr/bin`, `/opt/llama.cpp`, `/opt/homebrew/bin`
+- Ollama's own installation roots, including runner subdirectories such as
+  `/usr/local/lib/ollama/runners/cpu` and `/usr/lib/ollama/runners/cpu`
+  (CUDA/ROCm builds are discovered automatically)
+
+To fix it:
+
+- Run the provided installer (`./installer.sh` or `install.bat`), which
+  downloads a compatible `llama-server` build into `~/.ollama-lite/bin`.
+- Or point Ollama Lite at an existing binary:
+  `ollama-lite config set llamaServer /path/to/llama-server`
+  (or set `OLLAMA_LITE_LLAMA_SERVER=/path/to/llama-server`).
+- Verify discovery with `ollama-lite config list` (the `llamaServer` field
+  should show a resolved path, not just `llama-server`).
+
+### Troubleshooting `401 Unauthorized`
 
 The proxy distinguishes two cases (both keep the `Ollama Cloud authentication failed (401 Unauthorized)` prefix):
 

@@ -55,7 +55,7 @@ const DEFAULT_CONFIG: Config = {
   port: 11434,
   modelsDir: "~/.ollama-lite/models",
   runtimeDir: "~/.ollama-lite/runtime",
-  defaultContext: 4096,
+  defaultContext: 2048,
   defaultQuantization: "Q4_K_M",
   idleTimeout: 0, // disabled by default: models stay loaded until explicitly stopped
   llamaServer: "llama-server",
@@ -78,16 +78,34 @@ export function findLlamaServer(preferredPath?: string): string {
   }
 
   // System and standard locations
+  candidates.push("llama-server");
+
+  // Standard Unix locations
   candidates.push(
-    "llama-server",
     "/usr/local/lib/ollama/llama-server",
+    "/usr/local/lib/ollama/runners/cpu/llama-server",
+    "/usr/local/lib/ollama/runners/cuda/llama-server",
+    "/usr/lib/ollama/llama-server",
+    "/usr/lib/ollama/runners/cpu/llama-server",
     "/usr/local/bin/llama-server",
     "/usr/bin/llama-server",
     expandPath("~/.ollama-lite/bin/llama-server"),
     expandPath("~/.local/bin/llama-server"),
     "/opt/llama.cpp/llama-server",
-    "/opt/homebrew/bin/llama-server"
+    "/opt/llama.cpp/build/bin/llama-server",
+    "/opt/homebrew/bin/llama-server",
+    "/opt/homebrew/opt/llama.cpp/bin/llama-server"
   );
+
+  // Windows locations (Ollama and manual installs)
+  if (process.platform === "win32") {
+    candidates.push(
+      expandPath("~/.ollama-lite/bin/llama-server.exe"),
+      "C:\\Program Files\\Ollama\\llama-server.exe",
+      "C:\\Program Files\\llama.cpp\\llama-server.exe",
+      expandPath("~\\AppData\\Local\\Programs\\Ollama\\llama-server.exe")
+    );
+  }
 
   for (const candidate of candidates) {
     try {
@@ -118,6 +136,84 @@ export function findLlamaServer(preferredPath?: string): string {
           if (resolvedExe) {
             return resolvedExe;
           }
+        }
+      }
+    } catch {
+      // Continue searching
+    }
+  }
+
+  // Last-resort: scan well-known Ollama installation roots for a
+  // llama-server binary that lives in a runner subdirectory we did not
+  // enumerate explicitly (e.g. a CUDA/ROCm build).
+  const scanRoots: string[] = [
+    "/usr/local/lib/ollama",
+    "/usr/lib/ollama",
+    "/opt/ollama",
+    "/opt/ollama/lib/ollama",
+  ];
+  if (process.platform === "win32") {
+    scanRoots.push("C:\\Program Files\\Ollama", "C:\\Program Files (x86)\\Ollama");
+  }
+  for (const root of scanRoots) {
+    try {
+      if (!fs.existsSync(root)) continue;
+      // Direct location
+      for (const name of ["llama-server", "llama-server.exe"]) {
+        const direct = path.join(root, name);
+        if (fs.existsSync(direct)) {
+          try {
+            const st = fs.statSync(direct);
+            if (st.isFile() && (process.platform === "win32" || st.mode & 0o111)) {
+              candidates.push(direct);
+            }
+          } catch {}
+        }
+      }
+      // Runner subdirectories
+      const runnersDir = path.join(root, "runners");
+      if (fs.existsSync(runnersDir) && fs.statSync(runnersDir).isDirectory()) {
+        for (const entry of fs.readdirSync(runnersDir)) {
+          for (const name of ["llama-server", "llama-server.exe"]) {
+            const candidate = path.join(runnersDir, entry, name);
+            if (fs.existsSync(candidate)) {
+              try {
+                const st = fs.statSync(candidate);
+                if (st.isFile() && (process.platform === "win32" || st.mode & 0o111)) {
+                  candidates.push(candidate);
+                }
+              } catch {}
+            }
+          }
+        }
+      }
+    } catch {
+      // Continue
+    }
+  }
+
+  // Second pass over the full candidate list (includes dynamic entries)
+  for (const candidate of candidates) {
+    try {
+      if (candidate.includes(path.sep)) {
+        const variants =
+          process.platform === "win32" && !candidate.toLowerCase().endsWith(".exe")
+            ? [candidate, `${candidate}.exe`]
+            : [candidate];
+        for (const variant of variants) {
+          if (fs.existsSync(variant)) {
+            const stat = fs.statSync(variant);
+            if (stat.isFile() && (process.platform === "win32" || stat.mode & 0o111)) {
+              return variant;
+            }
+          }
+        }
+      } else {
+        const resolved = Bun.which(candidate);
+        if (resolved) return resolved;
+        if (process.platform === "win32") {
+          const resolvedExe = Bun.which(`${candidate}.exe`);
+          if (resolvedExe) return resolvedExe;
         }
       }
     } catch {
