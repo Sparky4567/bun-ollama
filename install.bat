@@ -137,56 +137,22 @@ if defined LLAMA_SERVER_PATH (
   set "TMP_DIR=%TEMP%\ollama-lite-%RANDOM%%RANDOM%"
   if exist "!TMP_DIR!" rmdir /s /q "!TMP_DIR!"
   mkdir "!TMP_DIR!"
+  if errorlevel 1 exit /b 1
+  set "CLEAN_DIR=!TMP_DIR!"
 
-  REM Resolve the nightly release tag (bXXXX). NOTE: stable v-tags ship NO
-  REM binaries - only nightly b-tags carry bin-win-*.zip assets - so the
-  REM /releases/latest redirect (a v-tag) is useless here. The stable
-  REM release publishes a nightly-tag.txt pointer to its paired nightly.
-  set "RELEASE_TAG="
-  where curl.exe >nul 2>nul
+  REM Resolve published asset URLs with Bun, which is already installed above.
+  REM Stable releases can point to a nightly build instead of carrying binaries.
+  set "DOWNLOAD_URL="
+  bun -e "const base = 'https://api.github.com/repos/ggml-org/llama.cpp/releases'; const suffix = '-bin-win-cpu-' + process.env.ARCH_NAME + '.zip'; const get = async url => { const r = await fetch(url, { signal: AbortSignal.timeout(60000), headers: { 'User-Agent': 'ollama-lite-installer' } }); if (r.ok === false) throw new Error('HTTP ' + r.status); return r; }; const select = releases => { for (const release of [].concat(releases)) { if (release.draft) continue; const asset = (release.assets || []).find(a => a.name.endsWith(suffix)); if (asset) return asset.browser_download_url; } }; let url; try { const tag = (await (await get('https://github.com/ggml-org/llama.cpp/releases/latest/download/nightly-tag.txt')).text()).trim(); if (/^b[0-9]+$/.test(tag)) url = select(await (await get(base + '/tags/' + tag)).json()); } catch {} if (url === undefined) url = select(await (await get(base + '?per_page=20')).json()); if (url === undefined) throw new Error('No matching Windows CPU release asset'); console.log(url);" > "!TMP_DIR!\download-url.txt"
   if !ERRORLEVEL!==0 (
-    curl.exe -fsSL "https://github.com/ggml-org/llama.cpp/releases/latest/download/nightly-tag.txt" -o "!TMP_DIR!\nightly-tag.txt" 2>nul
-    if exist "!TMP_DIR!\nightly-tag.txt" (
-      for /f "usebackq delims=" %%T in ("!TMP_DIR!\nightly-tag.txt") do (
-        if not defined RELEASE_TAG set "RELEASE_TAG=%%T"
-      )
-    )
-  )
-  if not defined RELEASE_TAG (
-    echo [INFO] nightly-tag.txt unavailable, querying GitHub API for latest nightly...
-    where curl.exe >nul 2>nul
-    if !ERRORLEVEL!==0 (
-      for /f "tokens=2 delims=:," %%T in ('curl.exe -s "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=20" 2^>NUL ^| findstr "tag_name"') do (
-        set "RAW=%%T"
-        set "RAW=!RAW: =!"
-        set RAW=!RAW:"=!
-        if not defined RELEASE_TAG (
-          echo !RAW! | findstr /r /c:"^b[0-9][0-9]*" >nul
-          if !ERRORLEVEL!==0 set "RELEASE_TAG=!RAW!"
-        )
-      )
-    )
-  )
-  if not defined RELEASE_TAG (
-    echo [INFO] Trying /releases/latest redirect as last resort...
-    where curl.exe >nul 2>nul
-    if !ERRORLEVEL!==0 (
-      for /f "delims=" %%U in ('curl.exe -sIL -o NUL -w "%%{url_effective}" https://github.com/ggml-org/llama.cpp/releases/latest 2^>NUL') do set "EFFECTIVE_URL=%%U"
-      if defined EFFECTIVE_URL (
-        REM Tag is the text after the last "/" of the redirect URL.
-        call :LastPathSegment "!EFFECTIVE_URL!" RELEASE_TAG
-        if "!RELEASE_TAG!"=="latest" set "RELEASE_TAG="
-      )
-    )
+    set /p "DOWNLOAD_URL=" < "!TMP_DIR!\download-url.txt"
   )
 
-  if not defined RELEASE_TAG (
-    echo [WARN] Could not determine latest llama.cpp release tag.
-    echo        Install llama.cpp or Ollama for Windows manually, then re-run install.bat.
+  if not defined DOWNLOAD_URL (
+    echo [WARN] Could not determine a llama.cpp binary download URL.
+    echo        Install llama.cpp manually, then re-run install.bat.
     echo        See https://github.com/ggml-org/llama.cpp/releases
   ) else (
-    echo [INFO] Latest llama.cpp nightly: !RELEASE_TAG!
-    set "DOWNLOAD_URL=https://github.com/ggml-org/llama.cpp/releases/download/!RELEASE_TAG!/llama-!RELEASE_TAG!-bin-win-cpu-!ARCH_NAME!.zip"
     echo [INFO] Downloading from: !DOWNLOAD_URL!
     set "ZIP_FILE=!TMP_DIR!\llama.zip"
     set "DL_OK="
@@ -230,19 +196,19 @@ if defined LLAMA_SERVER_PATH (
           for %%D in ("!SERVER_FILE!") do set "EXTRACTED_DIR=%%~dpD"
           REM Copy the server plus companion DLLs/runtime files.
           xcopy "!EXTRACTED_DIR!*" "%OLLAMA_LITE_BIN%\" /E /I /Y /Q
-          set "LLAMA_SERVER_PATH=%OLLAMA_LITE_BIN%\llama-server.exe"
-          echo [OK] llama-server and shared runtime libraries installed to %OLLAMA_LITE_BIN%
+          if errorlevel 1 (
+            echo [WARN] Could not install llama-server runtime files.
+          ) else (
+            set "LLAMA_SERVER_PATH=%OLLAMA_LITE_BIN%\llama-server.exe"
+            echo [OK] llama-server and shared runtime libraries installed to %OLLAMA_LITE_BIN%
+          )
         )
       )
     )
   )
 
-  REM Best-effort temp cleanup (keep going even if locked).
-  REM NOTE: `if exist` takes no wildcards, so guard on the variable instead.
-  if defined TMP_DIR (
-    set "CLEAN_DIR=!TMP_DIR!"
-    REM If we descended into \unzipped, clean the parent.
-    echo !CLEAN_DIR! | findstr /i /c:"unzipped" >nul && for %%P in ("!CLEAN_DIR!\..") do set "CLEAN_DIR=%%~fP"
+  REM Always clean the original directory, including extraction fallbacks.
+  if defined CLEAN_DIR (
     if exist "!CLEAN_DIR!" rmdir /s /q "!CLEAN_DIR!" 2>nul
   )
   if not defined LLAMA_SERVER_PATH (
@@ -351,11 +317,16 @@ REM 7. Verification
 REM ------------------------------------------------------------------------------
 echo [INFO] Verifying installation...
 
-set "CLI_VER=v0.1.0"
+set "CLI_VER="
 where ollama-lite >nul 2>nul
 if %ERRORLEVEL%==0 (
-  for /f "delims=" %%V in ('ollama-lite version 2^>nul') do set "CLI_VER=%%V"
-  echo [SUCCESS] Ollama Lite is installed and ready ^(!CLI_VER!^)!
+  for /f "delims=" %%V in ('ollama-lite --version 2^>nul') do set "CLI_VER=%%V"
+  if defined CLI_VER (
+    echo [SUCCESS] Ollama Lite is installed and ready ^(!CLI_VER!^)!
+  ) else (
+    echo [ERROR] Ollama Lite version verification failed.
+    exit /b 1
+  )
 ) else (
   echo [WARN] 'ollama-lite' not yet on PATH for this shell; wrapper is at %OLLAMA_LITE_BIN%\ollama-lite.bat
   echo        Open a NEW terminal, or run: set "PATH=%OLLAMA_LITE_BIN%;%%PATH%%"
@@ -367,6 +338,7 @@ echo              Installation Completed!
 echo =======================================================
 echo.
 echo Quick Start Commands:
+echo   ollama-lite pull moondream:latest       # Download vision model and projector
 echo   ollama-lite run llama3.2:1b             # Run Hugging Face model
 echo   ollama-lite run ollama:deepseek-r1:8b   # Run official Ollama model
 echo   ollama-lite import-ollama                 # Import existing ~/.ollama models
@@ -380,17 +352,4 @@ echo If 'ollama-lite' is not recognized, open a NEW terminal
 echo ^(setx changes apply only to new shells^).
 echo.
 endlocal
-exit /b 0
-
-REM ------------------------------------------------------------------------------
-REM Helper: extract last "/"-separated segment of a URL into %2.
-REM Usage: call :LastPathSegment "https://.../tag/b12345" OUTVAR
-REM ------------------------------------------------------------------------------
-:LastPathSegment
-REM %1 = URL, %2 = output var name. Takes substring after final "/".
-set "_str=%~1"
-set "_str=%_str:/= %"
-set "_last="
-for %%S in (%_str%) do set "_last=%%S"
-set "%2=%_last%"
 exit /b 0
