@@ -5,6 +5,8 @@ import { logger } from "../utils/logging.ts";
 
 export interface SpawnLlamaServerOptions {
   modelPath: string;
+  projectorPath?: string;
+  ollamaTemplate?: string;
   modelName: string;
   port: number;
   contextSize?: number;
@@ -18,6 +20,7 @@ export interface ManagedLlamaServer {
   port: number;
   modelName: string;
   modelPath: string;
+  projectorPath?: string;
   runtimePath: string;
   logFile: string;
   getStderr: () => string;
@@ -30,6 +33,8 @@ export interface ManagedLlamaServer {
 export function spawnLlamaServer(options: SpawnLlamaServerOptions): ManagedLlamaServer {
   const {
     modelPath,
+    projectorPath,
+    ollamaTemplate,
     modelName,
     port,
     contextSize = 2048,
@@ -38,6 +43,7 @@ export function spawnLlamaServer(options: SpawnLlamaServerOptions): ManagedLlama
     threads,
   } = options;
 
+  if (projectorPath && !fs.existsSync(projectorPath)) throw new Error(`Vision projector missing: ${projectorPath}. Pull the model again.`);
   if (!fs.existsSync(modelPath)) {
     throw new Error(`Model file not found at: ${modelPath}`);
   }
@@ -80,6 +86,7 @@ export function spawnLlamaServer(options: SpawnLlamaServerOptions): ManagedLlama
       {
         modelName,
         modelPath,
+        projectorPath,
         port,
         contextSize,
         llamaServerBin,
@@ -101,6 +108,16 @@ export function spawnLlamaServer(options: SpawnLlamaServerOptions): ManagedLlama
     "-c",
     String(contextSize),
   ];
+
+  if (projectorPath) {
+    // Vision inference is memory intensive; use one slot on lightweight hosts.
+    args.push("--mmproj", projectorPath, "--parallel", "1");
+    // Legacy Moondream GGUFs omit a chat template. Preserve the Question/Answer
+    // format supplied by the registry instead of llama.cpp's ChatML fallback.
+    if (ollamaTemplate?.includes('Question: {{ .Prompt }}') && ollamaTemplate.includes('Answer: {{ .Response }}')) {
+      args.push("--chat-template", "{% for message in messages %}{% if message.role == 'user' %}{{ ' Question: ' + message.content + '\\n\\n Answer:' }}{% elif message.role == 'assistant' %}{{ ' ' + message.content + '\\n\\n' }}{% else %}{{ message.content + '\\n\\n' }}{% endif %}{% endfor %}");
+    }
+  }
 
   if (threads && threads > 0) {
     args.push("-t", String(threads));

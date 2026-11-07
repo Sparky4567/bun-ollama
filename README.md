@@ -14,6 +14,7 @@ Bun acts as fast, lightweight glue responsible for:
 - Lifecycle management (lazy start, health checks, dynamic port allocation)
 - Models stay loaded until explicitly stopped (optional idle-timeout auto-unload)
 - Full streaming HTTP API (Ollama + OpenAI compatibility)
+- Vision image inputs with automatic Ollama projector downloads and imports
 - Interactive CLI with live streaming tokens
 - Built-in benchmarking suite
 
@@ -152,7 +153,7 @@ error and exit code 1 before anything is downloaded or loaded.
 ## Model Sources & Catalog
 
 ### 1. Pure Ollama Models (Official `registry.ollama.ai`)
-Pull and run any model directly from the official Ollama registry with full OCI layer support (GGUF weights, Modelfile parameters, chat templates, stop tokens):
+Pull and run models directly from the official Ollama registry with OCI layer support (GGUF weights, vision projectors, Modelfile parameters, chat templates, stop tokens):
 ```bash
 # Explicit ollama: prefix
 bun run src/index.ts pull ollama:deepseek-r1:8b
@@ -210,13 +211,13 @@ bun run src/index.ts run bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M
 ### Ollama-Compatible API
 - `GET  /` - Service health status
 - `GET  /health` - JSON health check
-- `GET  /api/tags` - List installed models
+- `GET  /api/tags` - List installed models and capabilities
 - `GET  /api/ps` - List running model processes
-- `POST /api/show` - Show model manifest
+- `POST /api/show` - Show model metadata and capabilities
 - `POST /api/pull` - Pull model with streaming NDJSON progress
 - `POST /api/delete` - Delete model
 - `POST /api/chat` - Chat completions (streaming NDJSON & non-streaming)
-- `POST /api/generate` - Text completions (streaming NDJSON & non-streaming)
+- `POST /api/generate` - Text completions with optional image input (streaming NDJSON & non-streaming)
 - `POST /api/auth/signin` - Authenticate with Ollama Cloud API key
 - `POST /api/auth/signout` - Clear Ollama Cloud authentication
 - `GET  /api/auth/status` - Check authentication status & accessible cloud models
@@ -227,6 +228,94 @@ bun run src/index.ts run bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M
 - `GET  /v1/models` - List models
 - `POST /v1/chat/completions` - Chat completions (SSE streaming & JSON)
 - `POST /v1/completions` - Text completions
+
+## Image input (vision)
+
+Vision models pulled from the Ollama registry now include their separate image
+projector. Both artifacts are checksum verified, cached by digest, and loaded
+together by `llama-server --mmproj`. Importing an existing Ollama model also
+imports its projector using the selected copy or symlink mode. Shared projectors
+are retained until the last model referencing them is removed.
+
+```bash
+ollama-lite pull moondream:latest
+ollama-lite daemon restart
+```
+
+If you pulled a vision model with an older Ollama Lite version, pull it again to
+fetch its missing projector. Cached language-model weights are reused. Model sizes
+include both weights and the projector. A recent llama.cpp build with
+multimodal support is required; support for a particular model/projector pair also
+depends on the installed llama.cpp version. Local vision models use one inference
+slot to limit memory overhead. CPU image encoding, especially the first request,
+can take several minutes on small hosts; inference routes keep the connection open
+while waiting for the first token. Client disconnects are forwarded to local chat
+inference.
+
+`GET /api/tags` and `POST /api/show` return `capabilities`,
+including `vision` for local models with an installed projector. Text-only models
+reject image requests with a useful error. Vision-capable cloud models continue
+to use the existing cloud proxy.
+
+Send base64 image bytes in each Ollama user message's `images` array:
+
+```python
+import base64
+import requests
+
+with open("photo.jpg", "rb") as image:
+    encoded = base64.b64encode(image.read()).decode("ascii")
+
+result = requests.post("http://localhost:11434/api/chat", json={
+    "model": "moondream:latest",
+    "messages": [{"role": "user", "content": "Describe this image.", "images": [encoded]}],
+    "stream": False,
+}, timeout=600)
+result.raise_for_status()
+print(result.json()["message"]["content"])
+```
+
+`POST /api/generate` also accepts top-level `images` with `prompt`; it returns the
+usual `response` field. Images support both streaming and non-streaming requests.
+Raw prompts, custom templates, and token-array context are not supported together
+with images on `/api/generate`; use `/api/chat` for image conversation history.
+For example, reuse `encoded` from above:
+
+```python
+result = requests.post("http://localhost:11434/api/generate", json={
+    "model": "moondream:latest",
+    "prompt": "Describe this image.",
+    "images": [encoded],
+    "stream": False,
+}, timeout=600)
+result.raise_for_status()
+print(result.json()["response"])
+```
+
+OpenAI-compatible clients can send text and `image_url` content parts to
+`POST /v1/chat/completions`, including base64 data URLs. Adjacent conversation turns
+retain their image parts when normalized. Image inputs support PNG, JPEG, WebP,
+GIF, and BMP, up to 8 images per request and 20 MB per embedded image. Actual decoding and
+model-specific image support are handled by llama.cpp. Remote HTTP(S) image URLs
+on the OpenAI route are forwarded to llama.cpp; Ollama routes require base64 bytes.
+Registry pulls and local imports discover projectors automatically; arbitrary
+Hugging Face repositories and direct GGUF URLs do not infer matching projectors.
+
+With the OpenAI Python client, reuse `encoded` in an image content part:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama", timeout=600)
+result = client.chat.completions.create(
+    model="moondream:latest",
+    messages=[{"role": "user", "content": [
+        {"type": "text", "text": "Describe this image."},
+        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded}"}},
+    ]}],
+)
+print(result.choices[0].message.content)
+```
 
 ## Python API Examples
 
@@ -522,7 +611,12 @@ Only one server can own port 11434 at a time: `serve` and `daemon` share the sam
 
 ### Slow CPU Inference and the HTTP `idleTimeout`
 
-Local CPU inference is slow on small hosts (e.g. ~20s for a trivial prompt, 60–130s+ for a large system + history prompt on a 1.2 GB Q8_0 model). `Bun.serve()` defaults to a 10s idle timeout, which used to kill those long generations mid-stream so clients received an empty reply. `startServer` (`src/api/server.ts`) now sets `idleTimeout: 255` (the Bun maximum). If you still see `Bun.serve() timed out a request after 10 seconds` in `daemon.log`, restart `serve`/`daemon` — you are running a build from before this fix. For faster turns, prefer a smaller local model (e.g. `gemma3:270m`) or a `-cloud` model.
+Local CPU inference and image encoding can take several minutes on small hosts.
+The server disables request idle timeouts for `/api/chat`, `/api/generate`, and
+`/v1/chat/completions`; other routes retain the 255-second server idle timeout.
+Local chat upstream requests also disable Bun's fetch timeout and forward client
+cancellation. Set your client's timeout high enough for image encoding and
+generation, and restart `serve`/`daemon` after upgrading.
 
 ### Managing Logging Verbosity
 
@@ -548,9 +642,21 @@ You can adjust or disable logging through CLI flags, persistent configuration, o
 
 ## Recent Fixes
 
-### HTTP server no longer drops slow CPU inference (`idleTimeout: 255`)
+### Vision models load their image projectors
 
-`Bun.serve()` defaults to a 10s idle timeout. On small CPU hosts a `llama3.2:1b` turn takes 20–130s+, so the server killed the stream mid-generation and API clients got an empty reply (`Bun.serve() timed out a request after 10 seconds` in `daemon.log`). `startServer` now sets `idleTimeout: 255` (Bun maximum). Restart `serve`/`daemon` after pulling this change.
+Ollama registry pulls and local imports now retain the image projector alongside
+model weights. Downloads verify new artifacts before publishing the manifest,
+reuse cached blobs, and remove partial files on failure. Shared artifacts survive
+deletion while another model still references them. Local vision inference uses
+`--mmproj` and one inference slot, with a chat template fallback for legacy
+Moondream models. See [Image input (vision)](#image-input-vision) for API examples
+and upgrade steps.
+
+### HTTP server keeps slow image requests open
+
+Chat and generate inference routes now stay open beyond the server's 255-second
+idle limit so CPU image encoding can finish before the first token. Restart
+`serve`/`daemon` after pulling this change.
 
 ### Pull-then-run no longer re-downloads `ollama:`-prefixed models
 
@@ -565,6 +671,14 @@ The process manager previously unloaded models after 5 minutes of inactivity (`i
 ```bash
 bun test
 bun run typecheck
+```
+
+The full suite needs network access to the Ollama registry and permission to
+listen on local ports. Vision regression tests use fixtures and mocked downloads;
+they do not require model weights or a real llama-server installation:
+
+```bash
+bun test tests/multimodal.test.ts
 ```
 
 ## License

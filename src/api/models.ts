@@ -6,7 +6,16 @@ import {
 } from "../models/storage.ts";
 import { downloadModel } from "../models/downloader.ts";
 import type { ProcessManager } from "../runtime/process-manager.ts";
+import fs from "node:fs";
+import type { ModelManifest } from "../models/manifest.ts";
 import { logger } from "../utils/logging.ts";
+
+export function modelCapabilities(manifest: ModelManifest): string[] {
+  const cloud = manifest.is_cloud || manifest.format === "cloud" || manifest.source === "ollama-cloud";
+  const capabilities = (manifest.capabilities || ["completion"]).filter(c => c !== "vision");
+  if (cloud ? manifest.capabilities?.includes("vision") : manifest.projector && fs.existsSync(manifest.projector.blob_path)) capabilities.push("vision");
+  return [...new Set(capabilities)];
+}
 
 /**
  * GET /api/tags - Lists all installed models in Ollama format.
@@ -22,6 +31,7 @@ export async function handleListTags(config: Config): Promise<Response> {
       modified_at: m.modified_at,
       size: m.size,
       digest: m.digest,
+      capabilities: modelCapabilities(m),
       details: {
         parent_model: "",
         format: m.format || (isCloud ? "cloud" : "gguf"),
@@ -133,6 +143,7 @@ export async function handleShowModel(
   }
 
   return Response.json({
+    capabilities: modelCapabilities(manifest),
     license: manifest.license || "Unknown",
     modelfile: modelfileLines.join("\n"),
     parameters: parametersStr,

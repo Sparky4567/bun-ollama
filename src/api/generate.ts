@@ -2,11 +2,13 @@ import type { ProcessManager } from "../runtime/process-manager.ts";
 import { type Config } from "../config.ts";
 import { getManifest } from "../models/storage.ts";
 import { proxyCloudGenerate, proxyCloudOpenAICompletions } from "../runtime/cloud-client.ts";
+import { handleOllamaChat } from "./chat.ts";
 import { logger } from "../utils/logging.ts";
 
 export interface OllamaGenerateRequest {
   model: string;
   prompt: string;
+  images?: string[];
   system?: string;
   template?: string;
   context?: number[];
@@ -41,6 +43,37 @@ export async function handleOllamaGenerate(
   const modelName = body.model;
   if (!modelName) {
     return Response.json({ error: "Missing required 'model' field" }, { status: 400 });
+  }
+
+  if (body.images !== undefined && (!Array.isArray(body.images) || body.images.length > 0)) {
+    if (!Array.isArray(body.images)) return Response.json({ error: "Images must be an array." }, { status: 400 });
+    if (body.raw || body.template || body.context?.length) return Response.json({ error: "Image generation requests do not support raw, template or token context. Use /api/chat for multimodal history." }, { status: 400 });
+    const chatBody = { ...body, messages: [
+      ...(body.system ? [{ role: 'system', content: body.system }] : []),
+      { role: 'user', content: body.prompt || '', images: body.images },
+    ] };
+    const response = await handleOllamaChat(new Request(req.url, { method: 'POST', headers: req.headers, body: JSON.stringify(chatBody), signal: req.signal }), processManager, config);
+    if (!response.ok) return response;
+    const envelope = (chunk: any) => {
+      const { message, ...rest } = chunk;
+      return { ...rest, response: message?.content || '', ...(chunk.done ? { context: [] } : {}) };
+    };
+    if (body.stream === false) return Response.json(envelope(await response.json()));
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+    let buffer = '';
+    const transform = new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        buffer += decoder.decode(chunk, { stream: true });
+        const lines = buffer.split('\n'); buffer = lines.pop() || '';
+        for (const line of lines) if (line.trim()) controller.enqueue(encoder.encode(JSON.stringify(envelope(JSON.parse(line))) + '\n'));
+      },
+      flush(controller) {
+        buffer += decoder.decode();
+        if (buffer.trim()) controller.enqueue(encoder.encode(JSON.stringify(envelope(JSON.parse(buffer))) + '\n'));
+      },
+    });
+    return new Response(response.body!.pipeThrough(transform), { headers: { 'Content-Type': 'application/x-ndjson' } });
   }
 
   const prompt = body.prompt || "";

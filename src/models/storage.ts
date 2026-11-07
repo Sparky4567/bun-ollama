@@ -183,12 +183,14 @@ export async function deleteModel(
     return false;
   }
 
+  let projectorPathToDelete: string | undefined;
   let blobPathToDelete: string | null = null;
   let isCloud = false;
   try {
     const content = await Bun.file(targetPath).text();
     const manifest: ModelManifest = JSON.parse(content);
     blobPathToDelete = manifest.blob_path;
+    projectorPathToDelete = manifest.projector?.blob_path;
     isCloud = Boolean(manifest.is_cloud || manifest.source === "ollama-cloud" || manifest.format === "cloud");
   } catch {
     // proceed to remove manifest
@@ -206,20 +208,17 @@ export async function deleteModel(
   }
   logger.info(`Removed manifest for ${modelName}`);
 
-  // Check if blob is still referenced by any other manifest
-  if (!isCloud && blobPathToDelete && fs.existsSync(blobPathToDelete)) {
-    const allManifests = await listManifests(cfg);
-    const isReferenced = allManifests.some((m) => m.blob_path === blobPathToDelete);
-
-    if (!isReferenced) {
-      try {
-        fs.unlinkSync(blobPathToDelete);
-        logger.info(`Removed unreferenced blob ${blobPathToDelete}`);
-      } catch (err: any) {
-        logger.warn(`Could not delete blob ${blobPathToDelete}: ${err.message}`);
-      }
+  // Both model weights and projectors may be shared by other models.
+  const remaining = await listManifests(cfg);
+  for (const candidate of new Set([blobPathToDelete, projectorPathToDelete])) {
+    if (isCloud || !candidate || !fs.existsSync(candidate)) continue;
+    if (remaining.some(m => m.blob_path === candidate || m.projector?.blob_path === candidate)) continue;
+    try {
+      fs.unlinkSync(candidate);
+      logger.info(`Removed unreferenced blob ${candidate}`);
+    } catch (err: any) {
+      logger.warn(`Could not delete blob ${candidate}: ${err.message}`);
     }
   }
-
   return true;
 }

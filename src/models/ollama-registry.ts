@@ -384,6 +384,12 @@ export async function resolveOllamaRegistryModel(
     );
   }
 
+  const projectorLayer = manifest.layers.find(l => l.mediaType === "application/vnd.ollama.image.projector");
+  const projector = projectorLayer ? {
+    downloadUrl: `https://registry.ollama.ai/v2/${ref.namespace}/${ref.model}/blobs/${projectorLayer.digest}`,
+    expectedSha256: extractHexHash(projectorLayer.digest),
+    sizeBytes: projectorLayer.size,
+  } : undefined;
   const modelHexHash = extractHexHash(modelLayer.digest);
   const downloadUrl = `https://registry.ollama.ai/v2/${ref.namespace}/${ref.model}/blobs/${modelLayer.digest}`;
 
@@ -418,5 +424,7 @@ export async function resolveOllamaRegistryModel(
     system: systemText,
     license: licenseText,
     parameters: modelParams,
+    projector,
+    capabilities: [...new Set([...(configData?.capabilities || ["completion"]), ...(projector ? ["vision"] : [])])],
   };
 }

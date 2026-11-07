@@ -134,7 +134,7 @@ export class ProcessManager {
         }
 
         // 2. Start the local model server
-        return await this.startProcess(canonicalName, manifest.blob_path, manifest.digest, manifest.size, manifest.parameters?.context_size);
+        return await this.startProcess(canonicalName, manifest.blob_path, manifest.digest, manifest.size, manifest.parameters?.context_size, manifest.projector?.blob_path, manifest.template);
       } finally {
         this.startupLocks.delete(canonicalName);
       }
@@ -152,7 +152,9 @@ export class ProcessManager {
     blobPath: string,
     digest: string,
     size: number,
-    contextSize?: number
+    contextSize?: number,
+    projectorPath?: string,
+    ollamaTemplate?: string
   ): Promise<ModelProcess> {
     // If an existing instance is in processes map, stop it first
     await this.stop(modelName);
@@ -160,14 +162,22 @@ export class ProcessManager {
     const port = await portManager.allocatePort(modelName);
     logger.info(`Allocated port ${port} for model ${modelName}`);
 
-    const server = spawnLlamaServer({
-      modelName,
-      modelPath: blobPath,
-      port,
-      contextSize: contextSize || this.config.defaultContext,
-      llamaServerBin: this.config.llamaServer,
-      runtimeDir: this.config.runtimeDir,
-    });
+    let server: ManagedLlamaServer;
+    try {
+      server = spawnLlamaServer({
+        modelName,
+        modelPath: blobPath,
+        projectorPath,
+        ollamaTemplate,
+        port,
+        contextSize: contextSize || this.config.defaultContext,
+        llamaServerBin: this.config.llamaServer,
+        runtimeDir: this.config.runtimeDir,
+      });
+    } catch (error) {
+      portManager.releasePort(port);
+      throw error;
+    }
 
     const modelProc: ModelProcess = {
       model: modelName,

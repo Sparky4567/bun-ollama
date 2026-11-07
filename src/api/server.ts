@@ -62,7 +62,10 @@ export function startServer(config: Config, options?: StartServerOptions): Serve
     // sees an empty reply ("get nothing"). Allow the Bun maximum
     // (255s) per request.
     idleTimeout: 255,
-    fetch(req) {
+    fetch(req, server) {
+      // Image encoding on CPU can exceed Bun's maximum idle timeout before the
+      // first token. Keep inference requests open; client disconnects still abort.
+      if (['/api/chat', '/api/generate', '/v1/chat/completions'].includes(new URL(req.url).pathname)) server.timeout(req, 0);
       return router.handle(req);
     },
   });

@@ -2,11 +2,13 @@ import type { ProcessManager } from "../runtime/process-manager.ts";
 import { type Config } from "../config.ts";
 import { getManifest } from "../models/storage.ts";
 import { proxyCloudChat, proxyCloudOpenAIChat } from "../runtime/cloud-client.ts";
+import { ollamaMessages, validateOpenAIImages, requireVision, inferenceFetch, type ChatContent, type ContentPart } from "./multimodal.ts";
 import { logger } from "../utils/logging.ts";
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
+  images?: string[];
 }
 
 export interface OllamaChatRequest {
@@ -31,13 +33,18 @@ export interface OllamaChatRequest {
  * Combines adjacent messages with the same role for templates that require
  * strict user/assistant alternation.
  */
-export function normalizeChatMessages<T extends { role: string; content: string }>(
+export function normalizeChatMessages<T extends { role: string; content: ChatContent }>(
   messages: T[]
 ): T[] {
   return messages.reduce<T[]>((normalized, message) => {
     const previous = normalized[normalized.length - 1];
-    if (previous?.role === message.role) {
-      previous.content = `${previous.content}\n${message.content}`;
+    if (previous?.role === message.role && message.role !== 'tool' && !(previous as any).tool_calls && !(message as any).tool_calls) {
+      if (typeof previous.content === 'string' && typeof message.content === 'string') {
+        previous.content = `${previous.content}\n${message.content}`;
+      } else {
+        const parts = (content: ChatContent): ContentPart[] => Array.isArray(content) ? content : content ? [{ type: 'text', text: content }] : [];
+        previous.content = [...parts(previous.content), ...parts(message.content)];
+      }
     } else {
       normalized.push({ ...message });
     }
@@ -84,6 +91,12 @@ export async function handleOllamaChat(
     return Response.json({ error: "Missing or invalid 'messages' array" }, { status: 400 });
   }
 
+  let converted: ReturnType<typeof ollamaMessages>;
+  try {
+    converted = ollamaMessages(body.messages);
+    if (converted.hasImages) requireVision(await getManifest(modelName, config));
+  } catch (err: any) { return Response.json({ error: err.message }, { status: 400 }); }
+
   const stream = body.stream !== false; // Ollama defaults to stream: true
 
   const startTime = Date.now();
@@ -123,9 +136,13 @@ export async function handleOllamaChat(
     });
   }
 
+  if (converted.hasImages) {
+    try { requireVision(await getManifest(modelName, config)); }
+    catch (err: any) { return Response.json({ error: err.message }, { status: 400 }); }
+  }
   const llamaPayload: any = {
     model: modelName,
-    messages: normalizeChatMessages(body.messages),
+    messages: normalizeChatMessages(converted.messages),
     stream,
     ...mapChatOptions(body.options),
   };
@@ -136,10 +153,11 @@ export async function handleOllamaChat(
   }
 
   try {
-    const upstreamRes = await fetch(`http://127.0.0.1:${modelProc.port}/v1/chat/completions`, {
+    const upstreamRes = await inferenceFetch(`http://127.0.0.1:${modelProc.port}/v1/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(llamaPayload),
+      signal: req.signal,
     });
 
     if (!upstreamRes.ok || !upstreamRes.body) {
@@ -385,6 +403,12 @@ export async function handleOpenAIChat(
     return Response.json({ error: "Missing required 'model' field" }, { status: 400 });
   }
 
+  let hasImages = false;
+  try {
+    if (!Array.isArray(body.messages)) throw new Error("Missing or invalid messages array");
+    hasImages = validateOpenAIImages(body.messages);
+    if (hasImages) requireVision(await getManifest(modelName, config));
+  } catch (err: any) { return Response.json({ error: err.message }, { status: 400 }); }
   const modelProc = await processManager.ensureModelReady(modelName);
   processManager.touch(modelName);
 
@@ -411,15 +435,20 @@ export async function handleOpenAIChat(
     });
   }
 
+  if (hasImages) {
+    try { requireVision(await getManifest(modelName, config)); }
+    catch (err: any) { return Response.json({ error: err.message }, { status: 400 }); }
+  }
   const upstreamBody = {
     ...body,
     messages: Array.isArray(body.messages) ? normalizeChatMessages(body.messages) : body.messages,
   };
 
-  const upstreamRes = await fetch(`http://127.0.0.1:${modelProc.port}/v1/chat/completions`, {
+  const upstreamRes = await inferenceFetch(`http://127.0.0.1:${modelProc.port}/v1/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(upstreamBody),
+    signal: req.signal,
   });
 
   return new Response(upstreamRes.body, {

@@ -29,6 +29,7 @@ export interface ModelManifest {
   remote_host?: string;
   remote_model?: string;
   capabilities?: string[];
+  projector?: { digest: string; blob_path: string; size: number };
 }
 
 export function createManifest(params: {
@@ -49,6 +50,7 @@ export function createManifest(params: {
   remoteHost?: string;
   remoteModel?: string;
   capabilities?: string[];
+  projector?: { digest: string; blob_path: string; size: number };
 }): ModelManifest {
   const isCloud = Boolean(params.isCloud || params.source === "ollama-cloud" || params.format === "cloud");
   return {
@@ -70,5 +72,6 @@ export function createManifest(params: {
     remote_host: params.remoteHost,
     remote_model: params.remoteModel,
     capabilities: params.capabilities,
+    projector: params.projector,
   };
 }

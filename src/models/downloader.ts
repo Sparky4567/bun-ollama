@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { once } from "node:events";
 import { resolveModel } from "./resolver.ts";
 import { type ModelManifest, createManifest } from "./manifest.ts";
 import { getBlobPath, saveManifest } from "./storage.ts";
@@ -17,242 +18,118 @@ export interface DownloadProgress {
   status: "resolving" | "downloading" | "verifying" | "storing" | "completed" | "error";
   error?: string;
 }
-
 export type ProgressCallback = (progress: DownloadProgress) => void;
 
-/**
- * Downloads a model GGUF file from Hugging Face or direct URL with streaming SHA-256 calculation.
- */
-export async function downloadModel(
-  modelInput: string,
-  options?: {
-    config?: Config;
-    onProgress?: ProgressCallback;
-    abortSignal?: AbortSignal;
+/** Stores a verified content-addressed artifact; cached model/projector blobs are reused. */
+export async function downloadBlob(artifact: { downloadUrl: string; expectedSha256?: string; sizeBytes?: number }, cfg: Config,
+  options: { signal?: AbortSignal; onProgress?: (downloaded: number, total: number) => void } = {}
+): Promise<{ digest: string; blob_path: string; size: number }> {
+  options.signal?.throwIfAborted();
+  if (artifact.expectedSha256) {
+    const cached = getBlobPath(formatDigest(artifact.expectedSha256), cfg.modelsDir);
+    if (fs.existsSync(cached) && (!artifact.sizeBytes || fs.statSync(cached).size === artifact.sizeBytes)) {
+      const size = fs.statSync(cached).size;
+      options.onProgress?.(size, size);
+      return { digest: formatDigest(artifact.expectedSha256), blob_path: cached, size };
+    }
   }
-): Promise<ModelManifest> {
-  const cfg = options?.config || loadConfig();
-  const onProgress = options?.onProgress;
-
-  onProgress?.({
-    model: modelInput,
-    totalBytes: 0,
-    downloadedBytes: 0,
-    percent: 0,
-    speedBytesPerSec: 0,
-    elapsedSeconds: 0,
-    status: "resolving",
-  });
-
-  logger.info(`Resolving remote model: ${modelInput}`);
-  const descriptor = await resolveModel(modelInput, cfg.defaultQuantization);
-
-  // If this is an Ollama Cloud model, register manifest directly
-  if (descriptor.isCloud || descriptor.source === "ollama-cloud") {
-    const manifest = createManifest({
-      name: descriptor.name,
-      digest: descriptor.expectedSha256 ? `sha256:${descriptor.expectedSha256}` : `sha256:${Math.random().toString(16).slice(2).padEnd(64, "0")}`,
-      size: descriptor.sizeBytes || 0,
-      quantization: descriptor.quantization,
-      repository: descriptor.repository,
-      filename: descriptor.filename || "(cloud)",
-      blobPath: "",
-      format: "cloud",
-      parameters: descriptor.parameters || {
-        context_size: descriptor.context || 131072,
-      },
-      template: descriptor.template,
-      system: descriptor.system,
-      license: descriptor.license,
-      source: "ollama-cloud",
-      isCloud: true,
-      remoteHost: descriptor.remoteHost || "https://ollama.com",
-      remoteModel: descriptor.remoteModel || descriptor.name,
-      capabilities: descriptor.capabilities,
-    });
-
-    await saveManifest(manifest, cfg);
-    logger.info(`Ollama Cloud model manifest saved for ${manifest.name}`);
-
-    onProgress?.({
-      model: descriptor.name,
-      totalBytes: 0,
-      downloadedBytes: 0,
-      percent: 100,
-      speedBytesPerSec: 0,
-      elapsedSeconds: 0,
-      status: "completed",
-    });
-
-    return manifest;
-  }
-
-  if (!descriptor.downloadUrl) {
-    throw new Error(`Could not determine download URL for model "${modelInput}"`);
-  }
-
-  logger.info(`Fetching model from ${descriptor.downloadUrl}`);
-
-  const response = await fetch(descriptor.downloadUrl, {
-    headers: {
-      "User-Agent": "bun-ollama-lite/1.0",
-    },
-    signal: options?.abortSignal,
-  });
-
-  if (!response.ok || !response.body) {
-    throw new Error(
-      `Failed to download model from ${descriptor.downloadUrl}: HTTP ${response.status} (${response.statusText})`
-    );
-  }
-
-  const contentLengthHeader = response.headers.get("content-length");
-  const totalBytes = contentLengthHeader ? parseInt(contentLengthHeader, 10) : (descriptor.sizeBytes || 0);
-
-  // Temporary path while downloading
-  const blobsDir = path.join(cfg.modelsDir, "blobs");
-  if (!fs.existsSync(blobsDir)) {
-    fs.mkdirSync(blobsDir, { recursive: true });
-  }
-
-  const tempFilename = `download-${Date.now()}-${Math.random().toString(36).slice(2)}.part`;
-  const tempFilePath = path.join(blobsDir, tempFilename);
-  const fileWriter = fs.createWriteStream(tempFilePath);
-
+  const response = await fetch(artifact.downloadUrl, { headers: { "User-Agent": "bun-ollama-lite/1.0" }, signal: options.signal });
+  if (!response.ok || !response.body) throw new Error(`Failed to download ${artifact.downloadUrl}: HTTP ${response.status}`);
+  const total = Number(response.headers.get("content-length")) || artifact.sizeBytes || 0;
+  const dir = path.join(cfg.modelsDir, "blobs");
+  fs.mkdirSync(dir, { recursive: true });
+  const temporary = path.join(dir, `download-${crypto.randomUUID()}.part`);
+  const writer = fs.createWriteStream(temporary);
+  // Track errors even between writes, so disk failures cannot become unhandled events.
+  let writeError: Error | undefined;
+  writer.on("error", error => { writeError = error; });
   const hasher = createIncrementalHasher();
-  let downloadedBytes = 0;
-  const startTime = Date.now();
-  let lastProgressUpdate = 0;
-
+  let size = 0;
+  const reader = response.body.getReader();
   try {
-    const reader = response.body.getReader();
-
     while (true) {
-      if (options?.abortSignal?.aborted) {
-        throw new Error("Download aborted");
-      }
-
+      options.signal?.throwIfAborted();
       const { done, value } = await reader.read();
       if (done) break;
-
-      if (value) {
-        // Stream chunk to hasher and disk
-        hasher.update(value);
-        fileWriter.write(Buffer.from(value));
-        downloadedBytes += value.length;
-
-        const now = Date.now();
-        // Throttle progress callbacks to every 100ms
-        if (now - lastProgressUpdate > 100 || downloadedBytes === totalBytes) {
-          lastProgressUpdate = now;
-          const elapsedSeconds = Math.max(0.001, (now - startTime) / 1000);
-          const speedBytesPerSec = downloadedBytes / elapsedSeconds;
-          const percent = totalBytes > 0 ? Math.min(100, Math.round((downloadedBytes / totalBytes) * 100)) : 0;
-
-          onProgress?.({
-            model: descriptor.name,
-            totalBytes,
-            downloadedBytes,
-            percent,
-            speedBytesPerSec,
-            elapsedSeconds,
-            status: "downloading",
-          });
-        }
-      }
+      if (writeError) throw writeError;
+      hasher.update(value);
+      if (!writer.write(value)) await once(writer, "drain");
+      size += value.length;
+      options.onProgress?.(size, total);
     }
+    if (writeError) throw writeError;
+    const finished = once(writer, "finish");
+    writer.end();
+    await finished;
+    if (writeError) throw writeError;
+    const hash = hasher.digest("hex");
+    if (artifact.expectedSha256 && artifact.expectedSha256 !== hash) throw new Error(`Checksum verification failed! Expected ${artifact.expectedSha256}, calculated ${hash}`);
+    if (artifact.sizeBytes && artifact.sizeBytes !== size) throw new Error(`Incomplete download: expected ${artifact.sizeBytes} bytes, received ${size}`);
+    const digest = formatDigest(hash);
+    const blob_path = getBlobPath(digest, cfg.modelsDir);
+    if (fs.existsSync(blob_path) && fs.statSync(blob_path).size === size) fs.unlinkSync(temporary);
+    else fs.renameSync(temporary, blob_path);
+    return { digest, blob_path, size };
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    writer.destroy();
+    // Wait for the file handle to close before removing on Windows.
+    if (!writer.closed) await once(writer, "close").catch(() => {});
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+    throw error;
+  } finally { reader.releaseLock(); }
+}
 
-    await new Promise<void>((resolve, reject) => {
-      fileWriter.end((err: any) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-
-    onProgress?.({
-      model: descriptor.name,
-      totalBytes,
-      downloadedBytes,
-      percent: 100,
-      speedBytesPerSec: downloadedBytes / Math.max(0.001, (Date.now() - startTime) / 1000),
-      elapsedSeconds: (Date.now() - startTime) / 1000,
-      status: "verifying",
-    });
-
-    const calculatedHash = hasher.digest("hex");
-    const digest = formatDigest(calculatedHash);
-    logger.info(`Download complete. SHA-256: ${calculatedHash}`);
-
-    // If an expected SHA-256 was provided, verify it
-    if (descriptor.expectedSha256 && descriptor.expectedSha256 !== calculatedHash) {
-      throw new Error(
-        `Checksum verification failed for ${descriptor.name}! Expected ${descriptor.expectedSha256}, calculated ${calculatedHash}`
-      );
-    }
-
-    // Move to final content-addressed blob location
-    const finalBlobPath = getBlobPath(digest, cfg.modelsDir);
-
-    if (fs.existsSync(finalBlobPath)) {
-      // Blob already exists (same content downloaded before), delete temp
-      fs.unlinkSync(tempFilePath);
+export async function downloadModel(modelInput: string, options?: {
+  config?: Config; onProgress?: ProgressCallback; abortSignal?: AbortSignal;
+}): Promise<ModelManifest> {
+  const cfg = options?.config || loadConfig();
+  const started = Date.now();
+  let lastProgress = 0;
+  const emit = (status: DownloadProgress['status'], downloadedBytes = 0, totalBytes = 0, error?: string) => {
+    const elapsedSeconds = Math.max(0.001, (Date.now() - started) / 1000);
+    options?.onProgress?.({ model: modelInput, status, downloadedBytes, totalBytes,
+      percent: status === 'completed' ? 100 : totalBytes ? Math.min(100, Math.round(downloadedBytes / totalBytes * 100)) : 0,
+      elapsedSeconds, speedBytesPerSec: downloadedBytes / elapsedSeconds, error });
+  };
+  emit('resolving');
+  try {
+    logger.info(`Resolving remote model: ${modelInput}`);
+    const descriptor = await resolveModel(modelInput, cfg.defaultQuantization);
+    options?.abortSignal?.throwIfAborted();
+    const cloud = descriptor.isCloud || descriptor.source === 'ollama-cloud';
+    let modelBlob: { digest: string; blob_path: string; size: number };
+    let projector: ModelManifest['projector'];
+    if (cloud) {
+      modelBlob = { digest: `sha256:${descriptor.expectedSha256 || crypto.randomUUID().replaceAll('-', '').padEnd(64, '0')}`, blob_path: '', size: 0 };
     } else {
-      fs.renameSync(tempFilePath, finalBlobPath);
-    }
-
-    // Create and save manifest
-    const manifest = createManifest({
-      name: descriptor.name,
-      digest,
-      size: downloadedBytes,
-      quantization: descriptor.quantization,
-      repository: descriptor.repository,
-      filename: descriptor.filename,
-      blobPath: finalBlobPath,
-      parameters: descriptor.parameters || {
-        context_size: descriptor.context || cfg.defaultContext,
-      },
-      template: descriptor.template,
-      system: descriptor.system,
-      license: descriptor.license,
-      source: descriptor.source || "huggingface",
-    });
-
-    await saveManifest(manifest, cfg);
-    logger.info(`Model manifest saved for ${manifest.name}`);
-
-    onProgress?.({
-      model: descriptor.name,
-      totalBytes,
-      downloadedBytes,
-      percent: 100,
-      speedBytesPerSec: downloadedBytes / Math.max(0.001, (Date.now() - startTime) / 1000),
-      elapsedSeconds: (Date.now() - startTime) / 1000,
-      status: "completed",
-    });
-
-    return manifest;
-  } catch (err: any) {
-    try {
-      fileWriter.close();
-      if (fs.existsSync(tempFilePath)) {
-        fs.unlinkSync(tempFilePath);
+      if (!descriptor.downloadUrl) throw new Error(`Could not determine download URL for model "${modelInput}"`);
+      const total = (descriptor.sizeBytes || 0) + (descriptor.projector?.sizeBytes || 0);
+      let offset = 0;
+      const progress = (bytes: number, artifactTotal: number) => {
+        if (Date.now() - lastProgress < 100 && bytes !== artifactTotal) return;
+        lastProgress = Date.now();
+        emit('downloading', offset + bytes, total || artifactTotal);
+      };
+      modelBlob = await downloadBlob({ ...descriptor, downloadUrl: descriptor.downloadUrl }, cfg, { signal: options?.abortSignal, onProgress: progress });
+      offset = modelBlob.size;
+      if (descriptor.projector) {
+        logger.info(`Downloading vision projector for ${descriptor.name}`);
+        projector = await downloadBlob(descriptor.projector, cfg, { signal: options?.abortSignal, onProgress: progress });
       }
-    } catch {
-      // Ignore cleanup error
+      emit('verifying', offset + (projector?.size || 0), total);
     }
-
-    onProgress?.({
-      model: descriptor.name,
-      totalBytes,
-      downloadedBytes,
-      percent: 0,
-      speedBytesPerSec: 0,
-      elapsedSeconds: (Date.now() - startTime) / 1000,
-      status: "error",
-      error: err.message,
-    });
-
-    throw err;
-  }
+    // Publish only after every required artifact is available and checksum verified.
+    const manifest = createManifest({ name: descriptor.name, digest: modelBlob.digest,
+      size: modelBlob.size + (projector?.size || 0), quantization: descriptor.quantization,
+      repository: descriptor.repository, filename: descriptor.filename || '(cloud)', blobPath: modelBlob.blob_path,
+      format: cloud ? 'cloud' : 'gguf', parameters: descriptor.parameters || { context_size: descriptor.context || cfg.defaultContext },
+      template: descriptor.template, system: descriptor.system, license: descriptor.license,
+      source: descriptor.source || 'huggingface', isCloud: Boolean(cloud), remoteHost: descriptor.remoteHost,
+      remoteModel: descriptor.remoteModel, capabilities: descriptor.capabilities, projector });
+    emit('storing', manifest.size, manifest.size);
+    await saveManifest(manifest, cfg);
+    emit('completed', manifest.size, manifest.size);
+    return manifest;
+  } catch (error) { emit('error', 0, 0, (error as Error).message); throw error; }
 }

@@ -19,6 +19,7 @@ export interface ModelDescriptor {
   remoteHost?: string;
   remoteModel?: string;
   capabilities?: string[];
+  projector?: { downloadUrl: string; expectedSha256: string; sizeBytes: number };
 }
 
 export interface ModelAlias {

@@ -19,6 +19,7 @@ export interface DiscoveredOllamaModel {
   modelBlobPath: string;
   size: number;
   quantization: string;
+  projector?: { digest: string; blob_path: string; size: number };
   parameters?: ModelParameters;
   template?: string;
   system?: string;
@@ -272,6 +273,14 @@ export async function scanLocalOllamaModels(customOllamaDir?: string): Promise<D
         }
       }
 
+      const projectorLayer = manifestJson.layers.find((l: any) => l.mediaType === "application/vnd.ollama.image.projector");
+      let projector: DiscoveredOllamaModel['projector'];
+      if (projectorLayer) {
+        const hash = extractHexHash(projectorLayer.digest);
+        const file = [path.join(blobsDir, `sha256-${hash}`), path.join(blobsDir, `sha256:${hash}`)].find(p => fs.existsSync(p));
+        if (!file) { logger.warn(`Missing vision projector for ${displayName}; skipping incomplete model.`); continue; }
+        projector = { digest: formatDigest(hash), blob_path: file, size: fs.statSync(file).size };
+      }
       discovered.push({
         name: displayName,
         normalizedName: normalizeModelName(displayName),
@@ -282,7 +291,8 @@ export async function scanLocalOllamaModels(customOllamaDir?: string): Promise<D
         manifestPath: filePath,
         modelDigest: formatDigest(modelHash),
         modelBlobPath: blobPath,
-        size: modelLayer.size || fs.statSync(blobPath).size,
+        size: (modelLayer.size || fs.statSync(blobPath).size) + (projector?.size || 0),
+        projector,
         quantization,
         parameters: parameters || { context_size: 2048 },
         template: templateText,
@@ -337,6 +347,18 @@ export async function importLocalOllamaModel(
     }
   }
 
+  let projector: ModelManifest['projector'];
+  if (discovered.projector) {
+    const destination = getBlobPath(discovered.projector.digest, cfg.modelsDir);
+    if (!fs.existsSync(destination)) {
+      if (mode === 'copy') fs.copyFileSync(discovered.projector.blob_path, destination);
+      else {
+        try { fs.symlinkSync(discovered.projector.blob_path, destination); }
+        catch { fs.copyFileSync(discovered.projector.blob_path, destination); }
+      }
+    }
+    projector = { ...discovered.projector, blob_path: destination };
+  }
   const manifest = createManifest({
     name: targetName,
     digest: discovered.modelDigest,
@@ -350,6 +372,8 @@ export async function importLocalOllamaModel(
     system: discovered.system,
     license: discovered.license,
     source: "ollama-local",
+    projector,
+    capabilities: projector ? ["completion", "vision"] : ["completion"],
   });
 
   await saveManifest(manifest, cfg);
