@@ -33,6 +33,11 @@ echo -e "${NC}"
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
 
+case "${OS}" in
+  linux|darwin) ;;
+  *) echo "Error: Unsupported operating system: ${OS}" >&2; exit 1 ;;
+esac
+
 case "${ARCH}" in
   x86_64|amd64)
     ARCH_NAME="x64"
@@ -55,7 +60,7 @@ echo -e "${BLUE}[INFO]${NC} Checking for Bun runtime..."
 
 if command -v bun >/dev/null 2>&1; then
   BUN_VERSION="$(bun --version)"
-  echo -e "${GREEN}[OK]${NC} Found Bun ${BOLD}v${BUN_VERSION}${NC} at $(which bun)"
+  echo -e "${GREEN}[OK]${NC} Found Bun ${BOLD}v${BUN_VERSION}${NC} at $(command -v bun)"
 elif [ -x "${BUN_BIN_DIR}/bun" ]; then
   export PATH="${BUN_BIN_DIR}:${PATH}"
   BUN_VERSION="$(bun --version)"
@@ -122,32 +127,51 @@ else
     OS_NAME="ubuntu"
   fi
 
-  ASSET_PATTERN="bin-${OS_NAME}-${ARCH_NAME}.tar.gz"
-
-  # Resolve latest release tag from GitHub redirect (avoids API rate limiting)
-  RELEASE_TAG="$(curl -sIL -o /dev/null -w '%{url_effective}' https://github.com/ggml-org/llama.cpp/releases/latest 2>/dev/null | sed -e 's|.*/tag/||' -e 's|.*/||' || true)"
-
-  if [ -n "${RELEASE_TAG}" ] && [ "${RELEASE_TAG}" != "latest" ]; then
-    DOWNLOAD_URL="https://github.com/ggml-org/llama.cpp/releases/download/${RELEASE_TAG}/llama-${RELEASE_TAG}-bin-${OS_NAME}-${ARCH_NAME}.tar.gz"
-  else
-    # Fallback to GitHub API query
-    RELEASE_JSON="$(curl -s https://api.github.com/repos/ggml-org/llama.cpp/releases/latest 2>/dev/null || true)"
-    DOWNLOAD_URL="$(echo "${RELEASE_JSON}" | grep "browser_download_url" | grep "${ASSET_PATTERN}" | head -n 1 | cut -d '"' -f 4 || true)"
+  # Stable releases may only publish a pointer to the nightly binary release.
+  # Use actual asset URLs rather than guessing filenames from the stable tag.
+  fetch_url() {
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL --connect-timeout 15 --max-time 60 "$1"
+    elif command -v wget >/dev/null 2>&1; then
+      wget -qO- --timeout=60 "$1"
+    else
+      return 1
+    fi
+  }
+  trap 'rm -rf "${TMP_DIR}"' EXIT
+  RELEASE_TAG="$(fetch_url https://github.com/ggml-org/llama.cpp/releases/latest/download/nightly-tag.txt 2>/dev/null | tr -d '\r\n' || true)"
+  RELEASE_API="https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=20"
+  if [[ "${RELEASE_TAG}" =~ ^b[0-9]+$ ]]; then
+    RELEASE_API="https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/${RELEASE_TAG}"
+  fi
+  select_asset() {
+    bun -e '
+      const releases = await new Response(Bun.stdin.stream()).json();
+      const suffix = "-bin-" + process.argv[1] + "-" + process.argv[2] + ".tar.gz";
+      for (const release of [].concat(releases)) {
+        if (release.draft) continue;
+        const asset = (release.assets || []).find(asset => asset.name.endsWith(suffix));
+        if (asset) { console.log(asset.browser_download_url); break; }
+      }
+    ' "${OS_NAME}" "${ARCH_NAME}"
+  }
+  DOWNLOAD_URL="$(fetch_url "${RELEASE_API}" 2>/dev/null | select_asset 2>/dev/null || true)"
+  if [ -z "${DOWNLOAD_URL}" ] && [[ "${RELEASE_API}" == */tags/* ]]; then
+    DOWNLOAD_URL="$(fetch_url 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=20' 2>/dev/null | select_asset 2>/dev/null || true)"
   fi
 
   if [ -z "${DOWNLOAD_URL}" ]; then
     echo -e "${YELLOW}[WARN]${NC} Could not determine download URL for llama.cpp release."
   else
     echo -e "${BLUE}[INFO]${NC} Downloading from: ${DOWNLOAD_URL}"
-    if curl -fsSL "${DOWNLOAD_URL}" -o "${TMP_DIR}/llama.tar.gz" 2>/dev/null; then
-      tar -xzf "${TMP_DIR}/llama.tar.gz" -C "${TMP_DIR}"
+    if fetch_url "${DOWNLOAD_URL}" > "${TMP_DIR}/llama.tar.gz" && tar -xzf "${TMP_DIR}/llama.tar.gz" -C "${TMP_DIR}"; then
 
       # Locate directory containing extracted llama-server
-      SERVER_FILE="$(find "${TMP_DIR}" -type f -name "llama-server" | head -n 1)"
+      SERVER_FILE="$(find "${TMP_DIR}" -type f -name "llama-server" -print -quit)"
       if [ -n "${SERVER_FILE}" ] && [ -f "${SERVER_FILE}" ]; then
         EXTRACTED_DIR="$(dirname "${SERVER_FILE}")"
         # Copy llama-server AND all companion dynamic libraries (.so / .dylib)
-        cp -r "${EXTRACTED_DIR}"/* "${OLLAMA_LITE_BIN}/"
+        cp -R "${EXTRACTED_DIR}/." "${OLLAMA_LITE_BIN}/"
         chmod +x "${OLLAMA_LITE_BIN}/llama-server"
         LLAMA_SERVER_PATH="${OLLAMA_LITE_BIN}/llama-server"
         echo -e "${GREEN}[OK]${NC} llama-server and shared runtime libraries installed to ${BOLD}${OLLAMA_LITE_BIN}${NC}"
@@ -160,6 +184,7 @@ else
   fi
 
   rm -rf "${TMP_DIR}"
+  trap - EXIT
 fi
 
 # ------------------------------------------------------------------------------
@@ -259,7 +284,7 @@ fi
 echo -e "${BLUE}[INFO]${NC} Verifying installation..."
 
 if command -v ollama-lite >/dev/null 2>&1; then
-  CLI_VER="$(ollama-lite version 2>/dev/null || echo "v0.1.0")"
+  CLI_VER="$(ollama-lite --version)"
   echo -e "${GREEN}${BOLD}[SUCCESS]${NC} Ollama Lite is installed and ready (${CLI_VER})!"
 else
   echo -e "${YELLOW}[WARN]${NC} 'ollama-lite' wrapper is at ${INSTALL_BIN_DIR}/ollama-lite"
@@ -270,6 +295,7 @@ echo -e "${GREEN}${BOLD}             Installation Completed!                   $
 echo -e "${CYAN}${BOLD}=======================================================${NC}\n"
 
 echo -e "Quick Start Commands:"
+echo -e "  ${BOLD}ollama-lite pull moondream:latest${NC}       # Download vision model and projector"
 echo -e "  ${BOLD}ollama-lite run llama3.2:1b${NC}             # Run Hugging Face model"
 echo -e "  ${BOLD}ollama-lite run ollama:deepseek-r1:8b${NC}   # Run official Ollama model"
 echo -e "  ${BOLD}ollama-lite import-ollama${NC}                 # Import existing ~/.ollama models"
